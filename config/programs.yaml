@@ -1,33 +1,57 @@
-# 第三方程序注册表(程序管理器) —— source 可被 API 覆盖
+# 第三方程序注册表(程序管理器) —— kind + source/docker 决定代管深度
 #
-# 口径(2026-10-25 收缩, 参照 K0nd1us/QQ-agent 0.5 部署哲学):
-# 主路径 = 「外部自管 + 健康探测」: kind=external, 用户自行安装启动,
-# 管理器只做 run.health 探测(http / ws_event)与状态播报, 不代管安装/启停。
-# github_release 下载安装与 docker spawn 降级为「可选增强」: 给某个程序加
-# source:{type: github_release,...} 或 docker:{...} 字段并去掉 kind: external
-# 即恢复对应能力, 其余行为不变。
+# 口径(2026-10-25 第 10 轮, 一键管理恢复):
+# - snowluma: kind=binary + source.github_release —— 一键拉取(下载真实 release 资产
+#   并解压, 平台自动选包: win-x64.zip / linux-x64.tar.gz, 内含 launcher + 自带 node),
+#   启动=spawn 解出的 launcher, 更新=check-latest→停旧→装新;
+#   QQ 登录在协议端自身完成(控制台不负责登录);
+# - hindsight: kind=docker —— 对齐 deploy/hindsight/docker-compose.yml;
+#   拉取=compose pull/docker pull, 启动=compose up -d / docker run, 停止/更新同理;
+#   本机无 docker 时返回明确指引与降级建议(不报错崩);
+# - napcat: external 外部自管(备选协议端, 健康探测口径不变);
+# - obsidian_sync: internal, manual_sync=true 支持控制台「立即同步」。
+#
+# 长动作(install/update)由 API 层转后台异步任务执行: 状态置 busy 防重复触发,
+# 完成后状态落回 installed/running, 经 GET /api/v1/programs 轮询与 WS program.status 推送。
 
 programs:
   - id: hindsight
     name: Hindsight 记忆引擎
-    kind: external
+    kind: docker
     tag: 记忆系统
     description: 长期记忆(MIT, PostgreSQL+pgvector, MCP 内置, fs mount 投影)
     homepage: https://github.com/vectorize-io/hindsight
-    install_hint: "外部自管——自行部署 Hindsight(官方 compose 或二进制), 确保 http://127.0.0.1:8888/health 可访问; 可选增强: 加 source/docker 字段恢复代管安装"
+    docker:
+      image: ghcr.io/vectorize-io/hindsight:latest   # 与 deploy/hindsight/docker-compose.yml 同源
+      container_name: me-hindsight
+      compose_file: deploy/hindsight/docker-compose.yml   # 优先 compose 编排; 无 compose 时按下方参数 docker run
+      ports: ["8888:8888", "9999:9999"]              # REST API / Web UI
+      volumes: ["hindsight-data:/home/hindsight/.pg0"]   # 官方指定持久化路径(内嵌库)
+      env:
+        HINDSIGHT_API_LLM_PROVIDER: deepseek          # LLM 抽取/embedding(与主链路同 key)
+        HINDSIGHT_API_LLM_API_KEY: ${DEEPSEEK_API_KEY}   # ${VAR} 从启动环境展开
+      extra_hosts: ["host.docker.internal:host-gateway"] # Linux 回连宿主机; Win/macOS Docker Desktop 自带
+      mem_limit: 4g
+      restart: unless-stopped
     run:
-      command: null       # 外部自管: 不由本管理器 spawn
+      command: null       # 容器形态: 不由本管理器 spawn
       health: {type: http, url: http://127.0.0.1:8888/health, interval_s: 30}
     integrate: create_banks   # 一键接入: 建 qq-agent/knowledge 双 bank
   - id: snowluma
     name: SnowLuma(QQ 协议端)
-    kind: external
+    kind: binary
     tag: QQ 通道·主
-    description: OneBot v11 协议端(Windows 桌面形态; 用户自装自管, 登录在协议端侧完成)
-    homepage: https://github.com/lxQingFeng/ME_Agent   # 占位: 以用户实际取得的发行渠道为准
-    install_hint: "外部自管——自行安装启动 SnowLuma, 在其设置中配置 OneBot 连接(见 integrate 一键接入); 通道双模见 config/channels.yaml"
+    description: OneBot v11 协议端(release 自带 node 运行时与 Web 控制台; 一键拉取/启动/更新, QQ 登录在协议端侧完成)
+    homepage: https://github.com/SnowLuma/SnowLuma
+    source:
+      type: github_release
+      repo: SnowLuma/SnowLuma
+      # 平台资产选择(2026-10-25 对照 v2.2.0 真实发行包核实): 全量包为准, -lite 精简变体不选
+      asset_pattern: "win-x64\\.zip$"              # Windows(默认兜底)
+      asset_pattern_linux: "linux-x64\\.tar\\.gz$" # Linux(沙箱/联调)
+      asset_pattern_darwin: "macOS|darwin"         # 该仓暂无 mac 资产 → 走「无匹配资产」明确报错路径
     run:
-      command: null       # 协议端永远外部自管(许可+维护负担, 2026-10-25 定论)
+      command: null       # install 后自动探测(launcher.bat / launcher.sh)
       health: {type: ws_event, interval_s: 30}
     integrate: write_onebot_config
   - id: napcat
@@ -46,6 +70,7 @@ programs:
     kind: internal
     tag: 人类可审计
     description: 每日 00:10 导出 WorldState 快照 + 记忆 vault git commit, knowledge 单向注入; 人类可直接翻阅 Agent 大脑。
+    manual_sync: true       # 控制台「立即同步」: POST /api/v1/programs/obsidian_sync/sync
     run:
       command: null
       health: {type: internal, interval_s: 30}

@@ -89,6 +89,10 @@ class AppContext:
         # ---- 第三方程序 ----
         self.programs = ProgramManager(settings, bus=self.bus, memory=self.memory,
                                        obsidian=self.obsidian, gateway=self.gateway)
+        # Obsidian 同步结果写入程序日志(state/programs/logs/obsidian_sync.log),
+        # 控制台「日志」按钮即可看到每次同步的成败摘要(失败不再静默)。
+        self.obsidian.set_log_hook(
+            lambda line: self.programs.log_program("obsidian_sync", line))
 
         # ---- 近期错误环(诊断导出数据源: logging + bus 降级事件) ----
         self.telemetry = RecentErrors(capacity=50)

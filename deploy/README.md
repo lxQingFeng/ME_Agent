@@ -56,9 +56,20 @@ ME_ONEBOT_MODE=forward ME_ONEBOT_WS_URL=ws://127.0.0.1:3001 python -m app
 
 两种模式下 token 均走 `ONEBOT_ACCESS_TOKEN`（forward 时以 query 参数 + Authorization 头双通道携带）；网关状态含 `mode / forward_url / reconnect_attempts / last_error`（`/api/v1/system/status` 的 gateway 段）。
 
-## 第三方程序口径（外部自管 + 健康探测）
+## 第三方程序口径（一键代管 + 健康探测，2026-10-25 第 10 轮）
 
-`config/programs.yaml` 默认注册表：SnowLuma / Hindsight / NapCat 均 `kind: external`——**用户自装自管，管理器只做健康探测**（http / ws_event）与状态播报，不代管安装/启停（动作接口返回明确指引）。github_release 下载安装与 docker spawn 为**可选增强**：给程序加 `source:` / `docker:` 字段并去掉 `external` 即恢复。
+`config/programs.yaml` 注册表按 kind 分层代管：
+
+| 程序 | 形态 | 控制台可做 |
+|---|---|---|
+| SnowLuma（QQ 协议端） | `binary + source.github_release` | 一键拉取（真实 release 资产，平台自动选包 win-x64.zip/linux-x64.tar.gz，内含 launcher+自带 node）→ 启动（spawn launcher）→ 更新（check-latest→停旧→装新→自动重启）。QQ 登录在协议端自身侧完成 |
+| Hindsight（记忆引擎） | `docker` | 一键拉取（`docker compose -f deploy/hindsight/docker-compose.yml pull`，缺 compose 时 `docker pull`）→ 启动（`compose up -d` 或 `docker run` 参数对齐 compose）→ 停止/更新。**本机无 docker 时返回明确指引与降级建议**（装 Docker Desktop / 远程部署后改 health.url / 退回 external 口径），不报错崩 |
+| NapCat（备选协议端） | `external` | 外部自管：只做健康探测（ws_event）与状态播报；动作接口返回明确指引 |
+| Obsidian 同步器 | `internal + manual_sync` | 启停同步循环 + 「立即同步」；每次同步的成败摘要落程序日志并发 `obsidian.sync` WS 事件 |
+
+长动作（install/update）由 API 转后台任务：程序状态置 `busy` 防重复触发，`POST /api/v1/programs/{pid}/{action}` 立即返回 `{queued: true}`，完成经 `program.status` WS 事件播报、`GET /api/v1/programs` 轮询与程序日志观察。动作响应统一 `{ok, id, action, result}`，失败原因与修复指引在 `result.error` / `result.hint`（扁平字段）。
+
+给程序加 `source:`（github_release）/`docker:` 字段并去掉 `external` 即恢复对应代管；反之加 `kind: external` 即收缩为纯健康探测。
 
 ## 诊断导出（排障不泄密）
 

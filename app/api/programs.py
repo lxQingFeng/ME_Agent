@@ -1,11 +1,19 @@
-"""第三方程序路由:状态 / 动作(install|update|start|stop|restart|integrate) / 日志。"""
+"""第三方程序路由:状态 / 动作(install|update|start|stop|restart|integrate|sync) / 日志。
+
+长动作(install/update)经 manager.run_action_async 后台执行: 立即返回
+{queued: true, status: "busy"}, HTTP 不等待下载/拉镜像完成;
+调用方轮询 GET /api/v1/programs 观察状态(busy → installed/running)与
+GET /api/v1/programs/{pid}/logs 尾部日志; busy 期间的重复触发会被拒绝。
+sync = manual_sync 程序(obsidian_sync)的「立即同步」。
+"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/api/v1/programs", tags=["programs"])
 
-ACTIONS = ("install", "update", "start", "stop", "restart", "integrate")
+ACTIONS = ("install", "update", "start", "stop", "restart", "integrate", "sync")
+LONG_ACTIONS = ("install", "update")   # 下载/拉镜像类: 后台任务 + 状态轮询
 
 
 @router.get("")
@@ -20,21 +28,10 @@ async def program_action(request: Request, pid: str, action: str):
     if action not in ACTIONS:
         raise HTTPException(status_code=400, detail=f"action must be one of {ACTIONS}")
     m = ctx.programs
-    try:
-        if action == "install":
-            out = await m.install(pid)
-        elif action == "update":
-            out = await m.update(pid)
-        elif action == "start":
-            out = await m.start(pid)
-        elif action == "stop":
-            out = await m.stop(pid)
-        elif action == "restart":
-            out = await m.restart(pid)
-        else:
-            out = await m.integrate(pid)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"program {pid} not found") from None
+    if action in LONG_ACTIONS:
+        out = await m.run_action_async(pid, action)
+    else:
+        out = await m.guarded_action(pid, action)
     return {"ok": bool(out.get("ok")), "id": pid, "action": action, "result": out}
 
 

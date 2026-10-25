@@ -248,13 +248,19 @@ def test_diagnostics_export() -> None:
 
             # D6 程序注册表收缩口径: snowluma/hindsight/napcat 为 external
             progs = {p.get("id"): p for p in data.get("components", {}).get("programs", [])}
-            ok = (progs.get("snowluma", {}).get("kind") == "external"
-                  and progs.get("hindsight", {}).get("kind") == "external"
+            ok = (progs.get("snowluma", {}).get("kind") == "binary"
+                  and progs.get("hindsight", {}).get("kind") == "docker"
                   and progs.get("napcat", {}).get("kind") == "external"
                   and progs.get("obsidian_sync", {}).get("kind") == "internal"
-                  and "start" not in progs.get("snowluma", {}).get("actions", [])
-                  and "install" not in progs.get("snowluma", {}).get("actions", []))
-            check("D6 程序管理收缩(external 口径)", ok, json.dumps({k: v.get("actions") for k, v in progs.items()})[:200])
+                  and "install" in progs.get("snowluma", {}).get("actions", [])
+                  and "start" in progs.get("snowluma", {}).get("actions", [])
+                  and "update" in progs.get("snowluma", {}).get("actions", [])
+                  and "install" in progs.get("hindsight", {}).get("actions", [])
+                  and "update" in progs.get("hindsight", {}).get("actions", [])
+                  and "sync" in progs.get("obsidian_sync", {}).get("actions", [])
+                  and "start" not in progs.get("napcat", {}).get("actions", []))
+            check("D6 程序管理口径(第10轮: binary/docker 恢复一键, napcat 仍 external)",
+                  ok, json.dumps({k: (v.get("kind"), v.get("actions")) for k, v in progs.items()})[:240])
     finally:
         os.environ.pop("ONEBOT_ACCESS_TOKEN", None)
         os.environ.pop("ME_INTERNAL_TOKEN", None)

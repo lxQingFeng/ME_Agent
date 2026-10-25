@@ -91,7 +91,8 @@ def _tts_fingerprint(ctx) -> dict:
 
 def _components(ctx) -> dict:
     gw = ctx.gateway.status()
-    programs = [{"id": x.get("id"), "kind": x.get("kind"), "status": x.get("status")}
+    programs = [{"id": x.get("id"), "kind": x.get("kind"), "status": x.get("status"),
+                 "actions": x.get("actions")}
                 for x in ctx.programs.list()]
     plugins = ctx.plugins.status()
     return {
