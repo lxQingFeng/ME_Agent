@@ -49,9 +49,10 @@ if (-not (Test-Path $VenvPy)) {
 }
 
 # ---- [2/2] 关键依赖导入检查 ----
-& $VenvPy -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic" 2>$null
+# NOTE: python_multipart 是 pip 包 python-multipart 的导入名(FastAPI 表单/文件上传路由必需)。
+& $VenvPy -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic, python_multipart" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Fail "关键依赖缺失(fastapi/uvicorn/httpx/yaml/websockets/pydantic)" @(
+    Fail "关键依赖缺失(fastapi/uvicorn/httpx/yaml/websockets/pydantic/python-multipart)" @(
         '.venv\Scripts\pip.exe install -r requirements.txt'
     )
 }
