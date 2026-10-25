@@ -1,4 +1,9 @@
 import sys, json, urllib.request
+
+# UTF-8 pipe contract with the host process (registry writes/reads UTF-8
+# bytes; without this a GBK-locale Windows console would corrupt I/O).
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 BAD = ["rain", "snow", "thunderstorm", "shower", "drizzle"]
 def get(city: str):
     geo = urllib.request.urlopen(

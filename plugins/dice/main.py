@@ -1,4 +1,9 @@
 import sys, json, random, re
+
+# UTF-8 pipe contract with the host process (registry writes/reads UTF-8
+# bytes; without this a GBK-locale Windows console would corrupt I/O).
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 data = json.loads(sys.stdin.read() or "{}")
 expr = (data.get("params") or {}).get("expr", "1d6")
 m = re.match(r"^(\d{1,2})d(\d{1,4})$", expr.strip())

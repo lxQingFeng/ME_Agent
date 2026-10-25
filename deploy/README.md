@@ -23,12 +23,15 @@ python -m app --no-engine        # 只起 API 服务(前端联调/冒烟)
 | `deploy\scripts\启动ME_Agent.bat` | 纯 ASCII（防 cmd 编码坑）。启动前检查 `.venv` 与六个关键依赖（fastapi/uvicorn/httpx/yaml/websockets/pydantic）存在性；**缺失时打印明确修复指引后暂停退出**（不双击装死）：`python -m venv .venv` + `.venv\Scripts\pip.exe install -r requirements.txt`；检查通过后 `start /b` 静默拉起，窗口保留展示日志（关窗即停止，Ctrl+C 亦可） |
 | `deploy\scripts\启动ME_Agent.ps1` | PowerShell 版。默认**后台隐藏启动**：PID 写 `logs\agent.pid`、日志重定向 `logs\agent.log` / `agent.err.log`；`-Foreground` 切前台交互；`-Port 8080` / `-ExtraArgs @('--no-engine')` 透传；停止：`taskkill /PID <logs\agent.pid 里的数字> /F` |
 
-首次安装（项目根执行一次）：
+首次安装（项目根执行一次；第 2 行让 pip 全程 UTF-8，中文 Windows 双保险——requirements.txt 已纯 ASCII 化，不设也能装）：
 
 ```bat
 python -m venv .venv
+set PYTHONUTF8=1
 .venv\Scripts\pip.exe install -r requirements.txt
 ```
+
+（PowerShell 用 `$env:PYTHONUTF8='1'` 代替 `set` 行。）
 
 ## 单实例锁
 

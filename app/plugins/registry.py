@@ -102,6 +102,9 @@ class PluginRegistry:
     def _sandbox_env(self, m: PluginManifest) -> dict:
         import os
         env = dict(os.environ)
+        # 强制子进程(插件)以 UTF-8 模式运行: 保证 stdin/stdout 管道与文件读写
+        # 不受宿主机 locale 影响(中文 Windows 默认 GBK 会把管道双方编码打岔)。
+        env["PYTHONUTF8"] = "1"
         if "net:internal" in m.permissions:
             env["ME_CONSOLE_URL"] = f"http://127.0.0.1:{self.settings.console.get('port', 8080)}"
             token = self.settings.internal_token()

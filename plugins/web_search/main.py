@@ -1,4 +1,9 @@
 import sys, json, os, urllib.request, urllib.parse
+
+# UTF-8 pipe contract with the host process (registry writes/reads UTF-8
+# bytes; without this a GBK-locale Windows console would corrupt I/O).
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 data = json.loads(sys.stdin.read() or "{}")
 q = (data.get("params") or {}).get("query", "").strip()
 base = os.environ.get("SEARXNG_BASE", "http://127.0.0.1:8889")

@@ -11,6 +11,11 @@ rem ============================================================
 setlocal
 cd /d "%~dp0..\.."
 
+rem Force UTF-8 mode for the child Python (fixes GBK locale issues on
+rem Chinese Windows: pip auto_decode / config files / state persistence).
+rem pip reads requirements.txt with locale codec when no BOM present.
+set "PYTHONUTF8=1"
+
 set "VENV_PY=.venv\Scripts\python.exe"
 set "REQ=requirements.txt"
 

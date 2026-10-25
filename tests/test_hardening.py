@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 PY = sys.executable
+# 本测试进程及其所有子进程统一 UTF-8 模式(与部署启动脚本同口径,
+# 规避 GBK locale Windows 上管道编解码不一致)。
+os.environ["PYTHONUTF8"] = "1"
 RESULTS: list[tuple[str, bool, str]] = []
 
 
@@ -81,7 +84,7 @@ def test_instance_lock_unit() -> None:
          'with instance_lock(sys.argv[1], timeout_s=30):\n'
          '    print("HELD", flush=True)\n'
          '    time.sleep(30)', str(d)],
-        cwd=str(ROOT), stdout=subprocess.PIPE, text=True)
+        cwd=str(ROOT), stdout=subprocess.PIPE, text=True, encoding="utf-8")
     holder.stdout.readline()  # HELD
     try:
         with instance_lock(d, timeout_s=1.0):
@@ -123,7 +126,8 @@ def test_double_start_rejection() -> None:
         return subprocess.Popen(
             [PY, "-m", "app", "--no-engine", "--port", str(port)],
             cwd=str(ROOT), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace")
 
     p1 = spawn(8831)
     try:

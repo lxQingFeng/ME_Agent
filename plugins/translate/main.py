@@ -1,4 +1,9 @@
 import sys, json, os, urllib.request
+
+# UTF-8 pipe contract with the host process (registry writes/reads UTF-8
+# bytes; without this a GBK-locale Windows console would corrupt I/O).
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 data = json.loads(sys.stdin.read() or "{}")
 p = data.get("params") or {}
 text = (p.get("text") or "").strip()

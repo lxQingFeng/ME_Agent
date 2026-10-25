@@ -412,11 +412,11 @@ class ProgramManager:
         if not proc_pid or not _pid_alive(proc_pid):
             return info
         try:
-            stat = Path(f"/proc/{proc_pid}/stat").read_text()
+            stat = Path(f"/proc/{proc_pid}/stat").read_text("utf-8")
             fields = stat.rsplit(")", 1)[1].split()
             utime, stime = int(fields[11]), int(fields[12])
             started_at = int(fields[19])
-            rss = int(Path(f"/proc/{proc_pid}/statm").read_text().split()[1]) * 4096
+            rss = int(Path(f"/proc/{proc_pid}/statm").read_text("utf-8").split()[1]) * 4096
             info["mem_mb"] = round(rss / 1048576, 1)
             if st.get("started_at"):
                 up = max(0, int(time.time() - st["started_at"]))

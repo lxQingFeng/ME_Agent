@@ -74,7 +74,7 @@ def _refresh_cache() -> list[str]:
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode("utf-8"))
         keys = data.get("ssh_keys", [])
-        HOSTKEYS_CACHE.write_text(json.dumps({"fetched_at": time.time(), "ssh_keys": keys}))
+        HOSTKEYS_CACHE.write_text(json.dumps({"fetched_at": time.time(), "ssh_keys": keys}), "utf-8")
         try:
             HOSTKEYS_CACHE.chmod(0o600)
         except OSError:
@@ -90,7 +90,7 @@ def expected_host_keys() -> list[paramiko.pkey.PKey]:
     fresh = False
     if HOSTKEYS_CACHE.exists():
         try:
-            cached = json.loads(HOSTKEYS_CACHE.read_text())
+            cached = json.loads(HOSTKEYS_CACHE.read_text("utf-8"))
             if time.time() - cached.get("fetched_at", 0) < HOSTKEYS_TTL:
                 lines, fresh = cached.get("ssh_keys", []), True
         except Exception:

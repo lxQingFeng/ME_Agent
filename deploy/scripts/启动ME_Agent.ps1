@@ -17,6 +17,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Force UTF-8 mode for the child Python (fixes GBK locale issues on Chinese
+# Windows: pip auto_decode / config files / state persistence).
+# pip reads requirements.txt with locale codec when no BOM present.
+$env:PYTHONUTF8 = '1'
+
 $Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $Root
 

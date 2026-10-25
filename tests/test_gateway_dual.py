@@ -32,6 +32,9 @@ sys.path.insert(0, str(ROOT))
 import websockets
 
 PY = sys.executable
+# 本测试进程及其所有子进程(python -m app / mock client)统一 UTF-8 模式:
+# 与部署启动脚本同口径, 规避 GBK locale Windows 上管道编解码不一致。
+os.environ["PYTHONUTF8"] = "1"
 HOST = "127.0.0.1"
 MOCK_PORT = 9911
 APP_PORT_FORWARD = 8821
@@ -251,7 +254,8 @@ def run_reverse_regression() -> None:
             [PY, str(ROOT / "scripts" / "mock_onebot_client.py"),
              "--url", f"ws://{HOST}:{APP_PORT_REVERSE}/onebot",
              "--send-private", "急！双模回归冒烟", "--expect", "text", "--wait-s", "25"],
-            cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+            cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120)
         check("R1 反向连入+私聊→文本回包(客户端 exit 0)",
               r.returncode == 0, f"rc={r.returncode} {r.stdout[-300:]} {r.stderr[-300:]}")
     finally:

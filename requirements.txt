@@ -2,5 +2,5 @@ fastapi>=0.128
 httpx>=0.28
 pydantic>=2.12
 PyYAML>=6.0
-uvicorn>=0.35        # python -m app 服务进程
-websockets>=14       # OneBot 反向 WS / /api/ws 推送(客户端联调脚本亦用)
+uvicorn>=0.35        # python -m app service process
+websockets>=14       # OneBot reverse WS + /api/ws push (client test scripts also use it)

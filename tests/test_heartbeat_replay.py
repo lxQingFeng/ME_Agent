@@ -25,6 +25,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 PY = sys.executable
+# 本测试进程及其所有子进程统一 UTF-8 模式(与部署启动脚本同口径,
+# 规避 GBK locale Windows 上管道编解码不一致)。
+import os as _os
+_os.environ["PYTHONUTF8"] = "1"
 RESULTS: list[tuple[str, bool]] = []
 
 
@@ -102,7 +106,8 @@ async def run_engine() -> tuple:
 
     # --- C. CLI 回放入口 ---
     proc = subprocess.run([PY, "-m", "app.heartbeat.replay", str(settings.state_dir / "world.db")],
-                          capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          cwd=str(ROOT), timeout=120)
     ok = proc.returncode == 0
     payload = None
     if ok:
