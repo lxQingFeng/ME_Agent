@@ -27,15 +27,51 @@ const App = {
     }, 45000);
   },
 
+  /* V5.1 · WS program.webui 推送模拟器（Mock 专属）：
+     boot 后 5s 派发一次 program:webui —— 模拟后端从 SnowLuma 启动日志「initial
+     credentials」行增量扫描提取到 WebUI 凭据的 WS 推送（每会话仅一次，刷新页面可
+     复现演示）；程序页凭据面板闪一拍 + toast 提示。契约推送体：{id, token, user, url}。
+     live 接入后由 WS 桥接层将后端 topic program.webui 转换为同名 document 事件，
+     模拟器自动让位。 */
+  startProgramPushSim() {
+    clearTimeout(this.tokenPushTimer);
+    if (API.mode !== "mock") return;
+    try { if (sessionStorage.getItem("console.tokenPush.done")) return; } catch (e) { /* 隐私模式等 */ }
+    this.tokenPushTimer = setTimeout(() => {
+      if (API.mode !== "mock") return;
+      try { sessionStorage.setItem("console.tokenPush.done", "1"); } catch (e) {}
+      const p = (MOCK.programs || []).find(x => x.id === "snowluma" && x.webui && x.webui.token);
+      if (!p) return;
+      document.dispatchEvent(new CustomEvent("program:webui", {
+        detail: { id: p.id, name: p.name, token: p.webui.token, user: p.webui.user, url: p.webui.url, source: "ws" },
+      }));
+    }, 5000);
+  },
+
+  /* V5 · 人设热生效：persona:updated（保存后由 api.js 派发）→ 侧栏 Agent 名即时刷新 */
+  bindPersonaHotReload() {
+    document.addEventListener("persona:updated", e => {
+      const nameEl = $("#agentName");
+      if (nameEl && e.detail && e.detail.name) {
+        nameEl.textContent = e.detail.name;
+        nameEl.classList.remove("persona-flash");
+        void nameEl.offsetWidth;   // 重启动画
+        nameEl.classList.add("persona-flash");
+      }
+    });
+  },
+
   boot() {
     this.bindNav();
     this.startClock();
     this.restoreModeBadge();
     this.startHeartbeat();
     this.startObsidianSyncSim();
+    this.startProgramPushSim();     // V5：SnowLuma 令牌 WS 推送演示
+    this.bindPersonaHotReload();    // V5：人设保存热生效（侧栏 Agent 名刷新）
     window.addEventListener("hashchange", () => this.route());
     this.route();
-    console.log("%cQQ Agent Console ready", "color:#22C55E;font-weight:bold");
+    console.log("%cQQ Agent Console ready (V5)", "color:#22C55E;font-weight:bold");
   },
 
   bindNav() {

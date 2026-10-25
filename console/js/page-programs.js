@@ -1,8 +1,26 @@
 /* ============================================================
-   page-programs.js — 第三方程序管理（V4 · 契约定稿版）
+   page-programs.js — 第三方程序管理（V5.1 · 契约对齐第 11 轮清单）
    ------------------------------------------------------------
+   V5 新增（对应 37 实机反馈 4 问题）：
+   1) 程序卡片状态真实化：running 持续显示、刷新不回跳（mock 持久化同构后端
+      programs.yaml 落盘，见 mock-data.js v5Init）；启停按钮按真实状态锁定
+      （运行中禁启动、非运行态禁停止、最新版锁更新）；沿用 1.2s busy 轮询 +
+      WS program.status 推送刷新（体 {id,status,pid,progress?,webui?}）；
+      running 程序重复 start 由后端明确拒绝（result{running:true,pid}）。
+   2) 日志查看升级：全量日志弹窗（滚动 + 搜索高亮/过滤 + 自动滚底 + 运行中
+      日志跟随），GET /api/v1/programs/{id}/logs?offset=&limit=（分页契约，
+      limit=0 读到结尾；lines 为原始字符串行，前端解析着色）；
+      SnowLuma WebUI 凭据高亮展示 + 一键复制（契约：程序详情 webui:{token,
+      user,url} 对象 / WS topic program.webui 推送，命中闪一拍）。
+   3) 下载/安装/更新进度条（契约双形态）：
+      字节型 progress{phase:"download", downloaded, total, percent, speed_bps,
+      done?} → 百分比条 + 统计；阶段型 {phase:"extract"|"pull", detail} →
+      流动条 + 阶段文案；经 1.2s 轮询 + WS program.progress 双通道实时刷新，
+      完成后转结果反馈；Mock 慢速下载演示（release ≈15s / docker 分层 ≈8s，
+      故障演练 ~31% 处中断）。
+   V4 保留：
    1) 一键管理回归：Hindsight（docker 一键形态）/ SnowLuma（release 拉取形态）
-      恢复「一键拉取(安装) / 启动 / 停止 / 更新 / 一键接入 / 检查更新 / 日志」——
+      「一键拉取(安装) / 启动 / 停止 / 更新 / 一键接入 / 检查更新」——
       按钮渲染源 = 后端 actions 数组（含 "check-update"）。
    2) 统一动作契约：POST /api/v1/programs/{id}/{action} → {ok, id, action, result}；
       成功 result{status,version,detail}，失败 result{code?,error,hint}（扁平修复指引）。
@@ -12,8 +30,9 @@
    4) Obsidian 同步器可观测面板：数据源 = GET /api/v1/programs 中 obsidian_sync 条目的
       health 字段（running/last_sync_at/last_result{changed,pushed,error}/error_streak/detail）；
       「立即同步」= POST /api/v1/programs/obsidian_sync/sync。
-      WS topics：program.status / obsidian.sync（桥接 document 事件 program:status /
-      obssync:push，面板/卡片自动刷新；Mock 由 45s 模拟器驱动）。
+      WS topics：program.status / obsidian.sync / program.progress / program.webui
+      （桥接 document 事件 program:status / obssync:push / program:progress /
+      program:webui，面板/卡片/进度条自动刷新；Mock 由模拟器驱动）。
    ============================================================ */
 "use strict";
 
@@ -87,6 +106,31 @@
   }
   function fmtDur(ms) { return ms == null ? "—" : (ms / 1000).toFixed(1) + "s"; }
   function spin(loader) { return loader.replace('class="i"', 'class="i spin"'); }
+  /* V5 · 进度格式化：字节/速度/剩余时间 */
+  function fmtBytes(b) { return b == null ? "—" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : (b / 1024).toFixed(0) + " KB"; }
+  function fmtSpeed(bps) { return bps == null ? "—" : (bps / 1048576).toFixed(1) + " MB/s"; }
+  function fmtEta(s) { return s == null ? "—" : s >= 60 ? Math.floor(s / 60) + "分" + (s % 60) + "秒" : s + " 秒"; }
+  /* V5 · 剪贴板（navigator.clipboard 优先，降级 execCommand） */
+  function copyText(text) {
+    if (!text) return Promise.resolve(false);
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => fallbackCopy(text));
+    }
+    return Promise.resolve(fallbackCopy(text));
+  }
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) { return false; }
+  }
   function obsTrigger(h) { return TRIGGER_LABEL[h && h.trigger] || (h && h.trigger) || "—"; }
   function obsStat(k, v, hint) {
     return `<div class="obs-stat"><span class="os-k">${esc(k)}</span><span class="os-v">${v}</span><span class="os-h">${hint}</span></div>`;
@@ -142,12 +186,72 @@
     const label = isBusyBtn ? `${m.label}中…` : m.label;
     return `<button class="btn ${m.cls}" data-action="${a}" ${dis ? "disabled" : ""}>${icon}<span>${label}</span></button>`;
   }
-  /* 最近一次动作反馈：busy（阶段文案）/ ok（detail）/ err（error + hint 修复指引）/ upd（版本对比） */
-  function feedbackArea(id) {
+  /* V5.1 · 令牌高亮面板：WebUI 凭据（契约：程序详情 webui:{token,user,url} 对象，
+     未检测到为 {}；后端从启动日志「initial credentials」提取，重启换新自动覆盖；WS topic
+     program.webui 推送命中即闪一拍）——解决 37 无法登录 SnowLuma 网页端的问题 */
+  function tokenPanel(p) {
+    const w = p.webui;
+    if (!w || !w.token) return "";
+    return `
+    <div class="token-box" data-token-box>
+      <div class="token-head">
+        ${Icons.key} <b>WebUI 登录凭据</b>
+        <span class="chip amber form-badge" title="来源：程序详情 webui 对象（后端提取自启动日志 initial credentials 行）；WS program.webui 推送（命中即闪一拍）">网页端登录用</span>
+      </div>
+      <div class="token-row">
+        <code class="token-value mono">${esc(w.token)}</code>
+        <button class="btn primary sm" data-copy-token="${esc(w.token)}" data-copy-token-name="${esc(p.name)}">${Icons.copy}<span>一键复制</span></button>
+      </div>
+      <div class="token-hint">打开 <span class="mono">${esc(w.url || "WebUI")}</span> → 用户 <span class="mono">${esc(w.user || "—")}</span> · 密码粘贴此令牌（=初始凭据 password，仅首次启动可见，控制台已代为提取）——也可在「日志」弹窗搜索定位凭据行</div>
+    </div>`;
+  }
+  /* V5.1 · busy 期间下载/安装/更新进度（契约双形态）：
+     字节型 {phase:"download", downloaded, total, percent, speed_bps, done?} → 百分比条 + 统计行
+     阶段型 {phase:"extract"|"pull", detail}（total=0/percent=null 同）→ 流动条 + 阶段文案
+     通道：busy 轮询读 progress 字段 + document 事件 program:progress（WS 同名 topic 桥接） */
+  function isByteProgress(pr) {
+    return !!(pr && pr.phase === "download" && pr.total > 0 && pr.percent != null);
+  }
+  function progressArea(p) {
+    const pr = p.progress;
+    if (!pr) return "";
+    if (isByteProgress(pr)) {
+      const pct = Math.max(0, Math.min(100, pr.percent ?? 0));
+      const eta = pr.speed_bps > 0 ? Math.max(0, Math.round((pr.total - (pr.downloaded || 0)) / pr.speed_bps)) : null;
+      return `
+    <div class="dl-progress" data-progress-box data-prog-form="byte">
+      <div class="dl-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="下载进度">
+        <div class="dl-fill${pr.done ? "" : " byte"}" data-dl-fill style="width:${pct}%"></div>
+      </div>
+      <div class="dl-stats mono">
+        <span class="dl-pct" data-dl-pct>${pct.toFixed(1)}%${pr.done ? " · 完成" : ""}</span>
+        <span class="dl-dim">已下载 ${fmtBytes(pr.downloaded)} / ${fmtBytes(pr.total)}</span>
+        <span class="dl-dim" data-dl-speed>${pr.speed_bps ? fmtSpeed(pr.speed_bps) : ""}</span>
+        <span class="dl-dim" data-dl-eta>${!pr.done && eta != null && eta > 0 ? "剩余 " + fmtEta(eta) : ""}</span>
+      </div>
+    </div>`;
+    }
+    /* 阶段型：无字节级语义（docker 拉镜像 / 解压收尾）→ 流动指示条 */
+    const detail = pr.detail || (pr.phase === "download" ? "下载中（未知总量）" : "执行中…");
+    return `
+    <div class="dl-progress" data-progress-box data-prog-form="stage">
+      <div class="dl-bar indet" role="progressbar" aria-label="执行进度">
+        <div class="dl-fill indet"></div>
+      </div>
+      <div class="dl-stats mono">
+        <span class="dl-pct">${esc(pr.phase === "pull" ? "镜像拉取" : pr.phase === "extract" ? "安装收尾" : "执行中")}</span>
+        <span class="dl-dim" data-dl-label>${esc(detail)}</span>
+      </div>
+    </div>`;
+  }
+  /* 最近一次动作反馈：busy（阶段文案 + 进度条）/ ok（detail）/ err（error + hint 修复指引）/ upd（版本对比） */
+  function feedbackArea(p) {
+    const id = p.id || p;
     const fb = feedback[id];
     if (!fb) return "";
+    const prog = (fb.type === "busy" && typeof p === "object" && p.progress) ? progressArea(p) : "";
     if (fb.type === "busy")
-      return `<div class="afb afb-busy">${spin(Icons.loader)}<span class="afb-stage">${esc(fb.stage || "已下发指令，等待后端执行…")}</span></div>`;
+      return `<div class="afb afb-busy">${spin(Icons.loader)}<span class="afb-stage">${esc(fb.stage || "已下发指令，等待后端执行…")}</span></div>${prog}`;
     if (fb.type === "ok")
       return `<div class="afb afb-ok">${Icons.check}<div class="bn-body"><b>${esc(fb.title)}</b>${fb.detail ? `<div class="afb-detail">${esc(fb.detail)}</div>` : ""}</div></div>`;
     if (fb.type === "err")
@@ -178,15 +282,12 @@
       <div class="prog-desc">${esc(p.desc)}</div>
       ${programMeta(p)}
       ${versionRow(p)}
+      ${tokenPanel(p)}
       ${procTable(p)}
       <div class="program-actions">
         ${acts.map(a => actionBtn(p, a)).join("")}
-        ${acts.includes("log") ? "" : `<button class="btn ghost" data-action="log" aria-expanded="false">${Icons.doc}<span>日志</span></button>`}
       </div>
-      ${feedbackArea(p.id)}
-      <div class="prog-log" hidden>
-        <pre class="mono code-block">${(p.logs || []).map(esc).join("\n")}</pre>
-      </div>
+      ${feedbackArea(p)}
     </div>`;
   }
 
@@ -356,6 +457,15 @@
     card.querySelectorAll("[data-action]").forEach(btn => {
       btn.addEventListener("click", () => onAction(btn, card));
     });
+    /* V5 · 令牌一键复制（navigator.clipboard，降级 execCommand） */
+    card.querySelectorAll("[data-copy-token]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        copyText(btn.dataset.copyToken).then(ok => {
+          if (ok) Toast.ok(`${btn.dataset.copyTokenName || "程序"} 登录令牌已复制`, "打开 WebUI 登录页直接粘贴即可");
+          else Toast.err("复制失败", "请手动选中文本复制");
+        });
+      });
+    });
   }
   function bindObsPanel(panel) {
     const btn = $("#obsSyncNow", panel);
@@ -413,14 +523,7 @@
     const p = programsCache.find(x => x.id === id);
     if (!p || !ACTION_META[action]) return;
 
-    if (action === "log") {
-      const logBox = card.querySelector(".prog-log");
-      const open = !logBox.hidden;
-      logBox.hidden = open;
-      btn.setAttribute("aria-expanded", String(!open));
-      if (!open) logBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      return;
-    }
+    if (action === "log") { await openLogModal(p); return; }
     if (action === "check-update") { await doCheckLatest(id, p); return; }
 
     const m = ACTION_META[action];
@@ -429,6 +532,8 @@
     const stages = stagesFor(p, action);
     let si = 0;
     const stageTimer = setInterval(() => {
+      const cardNode = mainEl && mainEl.querySelector(`[data-program="${id}"]`);
+      if (cardNode && cardNode.querySelector("[data-progress-box]")) return;   // V5：进度条接管阶段文案（program:progress）
       si = Math.min(si + 1, stages.length - 1);
       const node = mainEl && mainEl.querySelector(`[data-program="${id}"] .afb-stage`);
       if (node) node.textContent = stages[si];
@@ -439,8 +544,18 @@
       const res = await API.programAction(id, action);
       const r = (res && res.result) || {};
       if (res && res.ok === false) {
-        feedback[id] = { type: "err", action, title: `${p.name} ${m.label}失败`, code: r.code, message: r.error || r.message || "未知错误", hint: r.hint };
-        Toast.err(`${p.name} ${m.label}失败`, r.hint || r.error || "查看卡片内修复指引");
+        if (r.running) {
+          /* 契约：running 程序重复 start → result{running:true, pid}（明确拒绝）——
+             展示为中性反馈而非故障，随后按钮按真实状态锁定 */
+          feedback[id] = { type: "err", action, title: `${p.name} 启动被拒绝（已在运行）`,
+            message: r.error || "已在运行，重复启动被拒绝", hint: "状态已按 /programs 刷新，启动按钮已按真实状态锁定。" };
+          Toast.info(`${p.name} 启动被拒绝`, r.error || "已在运行");
+        } else {
+          feedback[id] = { type: "err", action, title: `${p.name} ${m.label}失败`, code: r.code,
+            message: r.error || r.message || "未知错误" + (r.exit_code != null ? `（exit_code=${r.exit_code}）` : ""),
+            hint: r.hint || (r.log_tail ? `进程尾部日志：${r.log_tail}` : "") };
+          Toast.err(`${p.name} ${m.label}失败`, r.hint || r.error || "查看卡片内修复指引");
+        }
       } else {
         feedback[id] = { type: "ok", action, title: `${p.name} ${m.label}完成`, detail: r.detail || `状态 → ${(STATUS[r.status] || STATUS.stopped).label}` };
         Toast.ok(`${p.name} ${m.label}完成`, r.detail || "");
@@ -512,8 +627,11 @@
   }
 
   /* ---------- WS 实时推送 → 自动刷新（桥接 document 事件） ----------
-     obssync:push ← WS topic obsidian.sync：同步器面板刷新（数据源 /programs）。
-     program:status ← WS topic program.status：程序状态变化 → 全页重渲染。 */
+     obssync:push     ← WS topic obsidian.sync：同步器面板刷新（数据源 /programs）。
+     program:status   ← WS topic program.status（体 {id,status,pid,progress?,webui?}）：状态变化 → 全页重渲染。
+     program:progress ← WS topic program.progress：下载/安装/更新进度 → 进度条就地刷新
+                        （字节型：百分比/已下载/总量/速度；阶段型：extract/pull 阶段文案）。
+     program:webui    ← WS topic program.webui（体 {id,token,user,url}）：WebUI 凭据检测推送 → 面板闪一拍。 */
   function bindWsEvents() {
     if (wsBound) return;
     wsBound = true;
@@ -531,6 +649,283 @@
         renderAll();
       } catch { /* 静默 */ }
     });
+    /* V5.1 · 进度就地刷新（WS program.progress 桥接）：字节型原地更新数值，
+       阶段型/形态切换整体替换进度盒；轮询竞态下进度盒未挂出时兜底单卡重渲染 */
+    document.addEventListener("program:progress", e => {
+      if (App.current !== "programs") return;
+      const d = e.detail || {};
+      const card = mainEl && mainEl.querySelector(`[data-program="${d.id}"]`);
+      if (!card) return;
+      let box = card.querySelector("[data-progress-box]");
+      if (!box) { updateCard(d.id); return; }
+      const wantForm = isByteProgress(d) ? "byte" : "stage";
+      if (box.dataset.progForm !== wantForm) {
+        box.outerHTML = progressArea({ id: d.id, progress: d });
+        box = card.querySelector("[data-progress-box]");
+        if (!box) return;
+      }
+      if (wantForm === "byte") {
+        const pct = Math.max(0, Math.min(100, d.percent ?? 0));
+        const fill = box.querySelector("[data-dl-fill]");
+        if (fill) fill.style.width = pct + "%";
+        const bar = box.querySelector(".dl-bar");
+        if (bar) bar.setAttribute("aria-valuenow", pct);
+        const eta = d.speed_bps > 0 ? Math.max(0, Math.round((d.total - (d.downloaded || 0)) / d.speed_bps)) : null;
+        const set = (sel, txt) => { const n = box.querySelector(sel); if (n) n.textContent = txt; };
+        set("[data-dl-pct]", pct.toFixed(1) + "%" + (d.done ? " · 完成" : ""));
+        set("[data-dl-speed]", d.speed_bps ? fmtSpeed(d.speed_bps) : "");
+        set("[data-dl-eta]", !d.done && eta != null && eta > 0 ? "剩余 " + fmtEta(eta) : "");
+      } else {
+        const lbl = box.querySelector("[data-dl-label]");
+        if (lbl) lbl.textContent = d.detail || "";
+      }
+      /* 阶段文案同步为当前进度阶段（stage 轮播让位） */
+      const stage = card.querySelector(".afb-stage");
+      if (stage) {
+        const am = ACTION_META[d.phase];
+        const phaseText = isByteProgress(d)
+          ? (d.done ? "下载完成" : "下载中")
+          : (d.phase === "pull" ? `拉取镜像 · ${d.detail || ""}` : d.phase === "extract" ? `收尾 · ${d.detail || ""}` : "执行中");
+        stage.textContent = phaseText;
+        void am;
+      }
+    });
+    /* V5.1 · webui 凭据推送（WS topic program.webui 桥接）：面板闪一拍 + toast
+       （数据源以 GET /programs 的 webui 字段为准刷新） */
+    document.addEventListener("program:webui", async e => {
+      if (App.current !== "programs") return;
+      const d = e.detail || {};
+      try {
+        programsCache = await API.getPrograms();
+        renderAll();
+      } catch { /* 静默 */ }
+      const card = mainEl && mainEl.querySelector(`[data-program="${d.id}"]`);
+      const box = card && card.querySelector("[data-token-box]");
+      if (box) box.classList.add("flash");
+      Toast.ok(`${d.name || "程序"} WebUI 凭据已检测到`, "WS 推送（program.webui）· 已在卡片高亮展示，一键复制即可登录网页端");
+    });
+  }
+
+  /* ---------- V5 · 全量日志查看弹窗 ----------
+     升级点（37 实机反馈「日志只有片段」）：全量日志（含启动段）+ 搜索高亮/过滤 +
+     自动滚底（新行跟随）+ 复制全部；运行中程序日志跟随（2.6s 一拍，live 由 WS 日志流驱动）。
+     数据源：GET /api/v1/programs/{id}/logs?full=1；SnowLuma 启动段含令牌行，可搜索定位。 */
+  const LG_CLS = { info: "lg-info", ok: "lg-ok", warn: "lg-warn", err: "lg-err", dim: "lg-dim" };
+  let logModal = null;   // { overlay, id, p, lines, follow, filterOnly, followTimer, lastFocus }
+  let logPauseTimer = null;   // 用户上滚判定（延迟复核，防程序化滚动动画误判）
+
+  /* 行解析（契约同构：lines 为原始字符串行 "[HH:MM:SS] LEVEL  message"，前端解析着色） */
+  const LG_RE = /^\[?(\d{2}:\d{2}:\d{2})\]?\s+(INFO|OK|WARN|ERROR|ERR|DIM|DEBUG)?\s*(.*)$/;
+  function parseLogLine(line) {
+    if (typeof line !== "string") return { t: line.t || "", lvl: line.lvl || "info", msg: line.msg || "" };
+    const m = LG_RE.exec(line.trim());
+    if (!m) return { t: "", lvl: "info", msg: line };
+    const raw = (m[2] || "").toUpperCase();
+    const lvl = /WARN/.test(raw) ? "warn" : /ERROR|ERR/.test(raw) ? "err" : raw === "OK" ? "ok" : raw === "DIM" || raw === "DEBUG" ? "dim" : "info";
+    return { t: m[1], lvl, msg: m[3] || "" };
+  }
+
+  function logLineHTML(line, q) {
+    const { t, lvl, msg } = parseLogLine(line);
+    const escd = esc(msg);
+    let hi = escd;
+    if (q) {
+      const eq = esc(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      try { hi = escd.replace(new RegExp(eq, "gi"), m => `<mark>${m}</mark>`); } catch (e) { hi = escd; }
+    }
+    return `<div class="log-line ${LG_CLS[lvl] || "lg-info"}"><span class="lg-t">${esc(t)}</span><span class="lg-msg">${hi}</span></div>`;
+  }
+
+  async function openLogModal(p) {
+    closeLogModal();   // 单实例
+    logModal = { id: p.id, p, lines: [], follow: true, filterOnly: false, followTimer: null };
+    logModal.lastFocus = document.activeElement;
+    const overlay = el(`
+      <div class="log-modal" role="dialog" aria-modal="true" aria-labelledby="logModalTitle">
+        <div class="log-panel">
+          <div class="log-head">
+            <div class="log-title">
+              <span class="program-logo" style="--logo-c:${p.color}">${esc(p.logo)}</span>
+              <div>
+                <div class="lt-name" id="logModalTitle">${esc(p.name)} · 全量日志</div>
+                <div class="lt-sub mono" data-log-sub>正在读取…</div>
+              </div>
+            </div>
+            <button class="btn ghost sm" data-log-close aria-label="关闭日志查看器">${Icons.x}<span>关闭</span></button>
+          </div>
+          <div class="log-tools">
+            <div class="log-search">
+              ${Icons.search}
+              <input type="search" data-log-q placeholder="搜索日志（如：credentials / password / WARN）…" aria-label="搜索日志" />
+              <span class="log-count mono" data-log-count>—</span>
+            </div>
+            <label class="log-toggle"><input type="checkbox" data-log-follow checked /><span>自动滚底</span></label>
+            <label class="log-toggle"><input type="checkbox" data-log-filter /><span>只看匹配</span></label>
+            <button class="btn ghost sm" data-log-copy>${Icons.copy}<span>复制全部</span></button>
+            <button class="btn ghost sm" data-log-bottom>${Icons.arrowDown}<span>回到底部</span></button>
+          </div>
+          <div class="log-body mono" data-log-body tabindex="0" aria-label="日志内容（可滚动）"></div>
+          <div class="log-foot">
+            ${(p.webui && p.webui.token)
+              ? `<div class="log-token"><span class="lt-k">WebUI 登录凭据（${esc(p.webui.user || "user")}）</span><code class="mono">${esc(p.webui.token)}</code><button class="btn primary sm" data-log-token-copy>一键复制</button></div>`
+              : `<span class="lf-hint">日志全量落盘（含启动段）· 运行中程序自动跟随新行</span>`}
+            <span class="lf-stats mono" data-log-stats></span>
+          </div>
+        </div>
+      </div>`.trim());
+    document.body.appendChild(overlay);
+    logModal.overlay = overlay;
+
+    /* 交互绑定 */
+    overlay.addEventListener("mousedown", e => { if (e.target === overlay) closeLogModal(); });
+    overlay.querySelector("[data-log-close]").addEventListener("click", closeLogModal);
+    const qInput = overlay.querySelector("[data-log-q]");
+    qInput.addEventListener("input", () => renderLogLines());
+    qInput.addEventListener("keydown", e => { if (e.key === "Escape") { e.stopPropagation(); qInput.value = ""; renderLogLines(); } });
+    overlay.querySelector("[data-log-follow]").addEventListener("change", e => {
+      logModal.follow = e.target.checked;
+      if (logModal.follow) scrollLogBottom(true);
+    });
+    overlay.querySelector("[data-log-filter]").addEventListener("change", e => {
+      logModal.filterOnly = e.target.checked;
+      renderLogLines();
+    });
+    overlay.querySelector("[data-log-copy]").addEventListener("click", () => {
+      copyText(logModal.lines.join("\n")).then(ok => {   // 契约：原始字符串行原样复制
+        if (ok) Toast.ok("日志已复制", `${logModal.lines.length} 行原始日志已复制到剪贴板`);
+        else Toast.err("复制失败", "请手动选择复制");
+      });
+    });
+    overlay.querySelector("[data-log-bottom]").addEventListener("click", () => {
+      const cb = overlay.querySelector("[data-log-follow]");
+      cb.checked = true;
+      logModal.follow = true;
+      scrollLogBottom(true);
+    });
+    const tokenBtn = overlay.querySelector("[data-log-token-copy]");
+    if (tokenBtn) tokenBtn.addEventListener("click", () => {
+      const token = (p.webui && p.webui.token) || "";
+      copyText(token).then(ok => {
+        if (ok) Toast.ok(`${p.name} 登录凭据已复制`, `打开 ${esc((p.webui && p.webui.url) || "WebUI")} · 用户 ${esc((p.webui && p.webui.user) || "—")} · 密码粘贴此值`);
+        else Toast.err("复制失败", "请手动选中文本复制");
+      });
+    });
+    const body = overlay.querySelector("[data-log-body]");
+    body.addEventListener("scroll", () => {
+      if (!logModal) return;
+      /* 暂停跟随判定延迟复核：程序化滚动（贴底/平滑动画）的中间态 dist 会瞬时 >60，
+         260ms 后复核仍 >60 才判定为用户上滚（瞬态自愈，不误取消自动滚底） */
+      clearTimeout(logPauseTimer);
+      logPauseTimer = setTimeout(() => {
+        if (!logModal) return;
+        const dist = body.scrollHeight - body.scrollTop - body.clientHeight;
+        if (dist > 60 && logModal.follow) {
+          logModal.follow = false;
+          const cb = overlay.querySelector("[data-log-follow]");
+          if (cb) cb.checked = false;
+        }
+      }, 260);
+    });
+    document.addEventListener("keydown", logModalEsc);
+    qInput.focus();
+
+    /* 加载全量日志（契约分页参数：offset=0 从文件头 · limit=0 读到结尾 = 全量） */
+    try {
+      const res = await API.getProgramLogs(p.id, { offset: 0, limit: 0 });
+      logModal.lines = (res && res.lines) || [];
+      renderLogLines();
+      scrollLogBottom(false);
+      startLogFollow();
+      /* 字体加载完成后行高会变化：贴底视图被撑开 → 重新贴底一次 */
+      if (document.fonts && document.fonts.ready && document.fonts.ready.then) {
+        document.fonts.ready.then(() => { if (logModal && logModal.follow) scrollLogBottom(false); }).catch(() => {});
+      }
+    } catch (e) {
+      body.innerHTML = `<div class="log-empty">${Icons.alert} 日志加载失败：${esc(e.message)}</div>`;
+    }
+  }
+
+  function logModalEsc(e) { if (e.key === "Escape") closeLogModal(); }
+
+  function renderLogLines() {
+    if (!logModal) return;
+    const q = (logModal.overlay.querySelector("[data-log-q]").value || "").trim();
+    const body = logModal.overlay.querySelector("[data-log-body]");
+    const qlc = q.toLowerCase();
+    const shown = (logModal.filterOnly && q)
+      ? logModal.lines.filter(l => String(l).toLowerCase().includes(qlc))
+      : logModal.lines;
+    body.innerHTML = shown.length
+      ? shown.map(l => logLineHTML(l, q)).join("")
+      : `<div class="log-empty">${q ? `无匹配「${esc(q)}」的日志行` : "暂无日志"}</div>`;
+    /* 匹配统计：行数 + 命中次数（原始字符串行全文匹配） */
+    const cnt = logModal.overlay.querySelector("[data-log-count]");
+    if (q) {
+      let hits = 0, rows = 0;
+      logModal.lines.forEach(l => {
+        const s = String(l).toLowerCase();
+        const n = qlc ? s.split(qlc).length - 1 : 0;
+        if (n > 0) rows++;
+        hits += n;
+      });
+      cnt.textContent = `${rows} 行 · ${hits} 处`;
+    } else cnt.textContent = `${logModal.lines.length} 行`;
+    /* 标题栏与底栏统计 */
+    const sub = logModal.overlay.querySelector("[data-log-sub]");
+    const running = logModal.p.status === "running";
+    sub.textContent = `${logModal.lines.length} 行 · 含启动段 · GET /api/v1/programs/${logModal.id}/logs?offset=0&limit=0${running ? " · 跟随中" : ""}`;
+    const stats = logModal.overlay.querySelector("[data-log-stats]");
+    const last = logModal.lines[logModal.lines.length - 1];
+    const lastT = last ? parseLogLine(last).t : "";
+    stats.textContent = logModal.lines.length ? `尾行 ${lastT} · ${logModal.lines.length} 行` : "";
+    if (logModal.follow) scrollLogBottom(false);
+  }
+
+  function scrollLogBottom(smooth) {
+    if (!logModal) return;
+    const body = logModal.overlay.querySelector("[data-log-body]");
+    /* behavior 显式指定（auto 会遵循 CSS scroll-behavior）*/
+    body.scrollTo({ top: body.scrollHeight, behavior: smooth ? "smooth" : "instant" });
+  }
+
+  /* 运行中程序日志跟随：2.6s 拉一拍新行（live 模式由 WS 日志流驱动，此处返回空） */
+  function startLogFollow() {
+    stopLogFollow();
+    if (!logModal) return;
+    logModal.followTimer = setInterval(async () => {
+      if (!logModal) return stopLogFollow();
+      const cur = programsCache.find(x => x.id === logModal.id);
+      if (!cur || cur.status !== "running") return;    // 仅运行中程序有新行
+      try {
+        const res = await API.programLogFollow(logModal.id);
+        const lines = (res && res.lines) || [];
+        if (!lines.length || !logModal) return;
+        logModal.lines.push(...lines);
+        if (logModal.lines.length > 600) logModal.lines.splice(0, logModal.lines.length - 600);   // 视窗保护
+        const q = (logModal.overlay.querySelector("[data-log-q]").value || "").trim();
+        if (!q || !logModal.filterOnly) {
+          const body = logModal.overlay.querySelector("[data-log-body]");
+          body.insertAdjacentHTML("beforeend", lines.map(l => logLineHTML(l, q)).join(""));
+          if (logModal.follow) scrollLogBottom(true);
+          const stats = logModal.overlay.querySelector("[data-log-stats]");
+          const last = logModal.lines[logModal.lines.length - 1];
+          stats.textContent = `尾行 ${last.t} · ${logModal.lines.length} 行`;
+        } else renderLogLines();   // 过滤模式下重渲染
+      } catch { /* 跟随失败静默 */ }
+    }, 2600);
+  }
+  function stopLogFollow() {
+    if (logModal && logModal.followTimer) { clearInterval(logModal.followTimer); logModal.followTimer = null; }
+  }
+
+  function closeLogModal() {
+    if (!logModal) return;
+    stopLogFollow();
+    clearTimeout(logPauseTimer);
+    document.removeEventListener("keydown", logModalEsc);
+    logModal.overlay.remove();
+    if (logModal.lastFocus && logModal.lastFocus.focus) logModal.lastFocus.focus();
+    logModal = null;
   }
 
   /* ---------- 页面入口 ---------- */
@@ -540,14 +935,22 @@
       <div class="page-head">
         <div>
           <div class="page-title">${Icons.server} 第三方程序</div>
-          <div class="page-desc">一键管理回归：Hindsight（Docker 形态）/ SnowLuma（Release 形态）支持一键拉取 · 启停 · 更新 · 一键接入，失败附修复指引；Obsidian 同步器全程可观测（busy 轮询 + WS 推送自动刷新）。</div>
+          <div class="page-desc">V5：状态真实化（跨刷新稳定 · 按钮按真实状态锁定）· 全量日志弹窗（搜索/自动滚底/跟随）· SnowLuma 登录令牌高亮一键复制 · 下载/安装/更新实时进度条；busy 轮询 1.2s + WS program.status / progress / token 推送自动刷新。</div>
         </div>
-        <button class="btn ghost" id="pgmRefresh">${Icons.refresh}<span>刷新</span></button>
+        <div style="display:flex;gap:8px">
+          <button class="btn ghost" id="pgmResetDemo" title="清空演示状态持久化，恢复出厂演示数据（running 初始态、令牌、可更新徽标）">${Icons.tag}<span>重置演示</span></button>
+          <button class="btn ghost" id="pgmRefresh">${Icons.refresh}<span>刷新</span></button>
+        </div>
       </div>
       <div id="pgmBody" class="grid cols-2" style="margin-top:16px">
         <div class="empty" style="grid-column:1/-1">${Icons.clock} 正在读取进程状态…</div>
       </div>`;
     $("#pgmRefresh", main).addEventListener("click", load);
+    $("#pgmResetDemo", main).addEventListener("click", () => {
+      if (MOCK.resetPrograms) MOCK.resetPrograms();
+      Toast.ok("演示数据已重置", "程序状态/版本/令牌已恢复出厂演示态");
+      load();
+    });
     bindWsEvents();
     load();
   }

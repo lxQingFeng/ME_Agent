@@ -158,6 +158,10 @@ const MOCK = {
       status: "running", version: "0.7.2", latest: "0.7.2", upstream: "0.7.3",
       source: "github.com/SnowLuma/SnowLuma/releases", dir: "~/.me-agent/programs/snowluma",
       proc: { pid: 1024, mem_mb: 186, cpu: "3.2%", uptime: "2天14小时", restarts: 1 },
+      /* V5.1（契约对齐·第 11 轮清单）：WebUI 凭据 = 程序详情 webui:{token,user,url} 对象
+         （未检测到为 {}）；后端从启动日志「initial credentials」行提取，重启换新令牌自动覆盖；
+         WS topic program.webui 推送 → 前端高亮 + 一键复制 */
+      webui: { token: "Xk9Tz2mQw7LnP4vR", user: "admin", url: "http://127.0.0.1:5099" },
       actions: ["install", "start", "stop", "update", "one-click", "check-update", "log"],
       color: "var(--blue)",
       logo: "SL", logs: [
@@ -281,6 +285,52 @@ const MOCK = {
     },
   },
 
+  /* ---------- V5.1 · 全量日志（契约：GET /api/v1/programs/{id}/logs?limit=&offset=） ----------
+     37 实机反馈「日志只有片段」→ 后端日志全量落盘（含启动段）、端点升级为 offset/limit 分页：
+     不传 offset = 尾部语义（V4 兼容）；offset=0&limit=200 从文件头翻；limit=0 = 从 offset 读到结尾（全量）。
+     此处由文件尾的 v5Init 生成：每个程序一段含启动段的全量日志（百余行，SnowLuma
+     启动段含 [WebUI] initial credentials 凭据行，可在日志查看器内搜索定位）。
+     行结构 = 原始字符串（契约同构："[HH:MM:SS] LEVEL  message"，前端解析着色）。 */
+  programLogFull: {},
+
+  /* ---------- V5.1 · LLM 设置（契约：GET/PUT /api/v1/settings/llm） ----------
+     字段按第 11 轮契约清单：provider(自由标签)/base_url/chat_model/planner_model/
+     temperature/max_tool_rounds/timeout_s；api_key 三态（"***"=保留 / ""=清除 / 非空=新值），
+     GET 回读 api_key 恒为 "***" 或 ""（明文永不回显）；保存热生效。 */
+  llmProviders: [
+    { id: "deepseek", name: "DeepSeek",     base_url: "https://api.deepseek.com/v1",          models: ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"] },
+    { id: "mimo",     name: "小米 MiMo",    base_url: "https://api.xiaomimimo.com/v1",         models: ["mimo-7b-instruct", "mimo-vl-7b"] },
+    { id: "zhipu",    name: "智谱 GLM",     base_url: "https://open.bigmodel.cn/api/paas/v4",  models: ["glm-4.6", "glm-4.5-air", "glm-4-flash"] },
+    { id: "openai_compatible", name: "OpenAI 兼容", base_url: "",                               models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] },
+    { id: "custom",   name: "自定义",       base_url: "",                                     models: [] },
+  ],
+  llmConfig: {                        // mock 内部形态（api.js GET 时转契约形态：api_key → "***"）
+    provider: "deepseek",
+    base_url: "https://api.deepseek.com/v1",
+    api_key: "sk-demo-9f3ab7c2d4e6",  // 仅演示内存值；GET/保存回读永不出明文
+    chat_model: "deepseek-chat",
+    planner_model: "deepseek-chat",
+    temperature: 0.7,
+    max_tool_rounds: 2,
+    timeout_s: 30,
+  },
+
+  /* ---------- V5.1 · 人设设置（契约：GET/PUT /api/v1/settings/persona） ----------
+     字段按契约清单：name / essence / style_rules[] / group_rules_digest / reply_fallbacks[]；
+     保存 + 热生效（管道构造提示词时现取）；空名字/空规则 400。 */
+  persona: {
+    name: "小满",
+    essence: "温和、好奇、偶尔吐槽但懂分寸",
+    style_rules: [
+      "语气自然克制，不用客套话",
+      "技术问题给可执行建议，不空谈",
+      "生活话题保持好奇与陪伴感",
+      "不确定的事实明确说不知道，不编造",
+    ],
+    group_rules_digest: "群聊默认潜水，被 @ 或话题相关时简短回应，避免刷屏",
+    reply_fallbacks: ["（这条我先记下了，想清楚再回你）", "收到，我看看。"],
+  },
+
   /* ---------- 诊断导出：GET /api/v1/diagnostics/export 的同构演示数据 ----------
      脱敏铁律：所有密钥仅以 hasXxx:true 布尔指纹出现，绝不出现原文。 */
   diagnostics: {
@@ -394,5 +444,248 @@ MOCK.advanceObsidianSync = function () {
   s.vault.last_commit = rec.commit;
   s.ws.last_push = now.toISOString();
 };
+
+/* ============================================================
+   V5 初始化（IIFE）：
+   1) 全量日志生成：每个程序含启动段（SnowLuma 启动段含 WebUI 令牌行，可搜索）
+   2) 演示状态持久化：程序状态跨刷新稳定（同构后端 programs.yaml 落盘 ——
+      running 刷新后仍是 running，不回跳；busy 不落盘，刷新回到动作前状态）
+   3) 长动作进度驱动：下载/安装/更新的 received/total/percent/速度实时演化，
+      写入程序条目 progress 字段（busy 轮询可见）并派发 document 事件
+      program:progress（对应 WS 同名 topic 的 mock 模拟）
+   ============================================================ */
+(function v5Init(M) {
+
+  const pad2 = n => String(n).padStart(2, "0");
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const ri = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
+
+  /* ---------- 1) 全量日志（契约同构：原始字符串行，前端解析着色） ---------- */
+  function buildLogs(startH, startM, startup, runtime, count) {
+    let h = startH, m = startM, s = 8;
+    const lines = [];
+    const stamp = () => {
+      const t = `${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+      s += 2 + Math.floor(Math.random() * 9);
+      if (s >= 60) { s -= 60; m++; }
+      if (m >= 60) { m -= 60; h++; }
+      return t;
+    };
+    /* 行格式（契约同构，与真实落盘一致的字符串形态）：[HH:MM:SS] LEVEL  message */
+    const push = (lvl, msg) => lines.push(`[${stamp()}] ${String(lvl).toUpperCase().padEnd(5, " ")} ${typeof msg === "function" ? msg() : msg}`);
+    startup.forEach(([lvl, msg]) => push(lvl, msg));
+    for (let i = 0; i < count; i++) {
+      const tpl = runtime[Math.floor(Math.random() * runtime.length)];
+      push(tpl.lvl || "info", tpl.msg);
+    }
+    return lines;
+  }
+
+  const slToken = "Xk9Tz2mQw7LnP4vR";   // 与 snowluma.webui.token 一致（换新自动覆盖）
+  M.programLogFull.snowluma = buildLogs(8, 0, [
+    ["info", `snowluma v0.7.2 (linux x64) 启动 · pid=1024`],
+    ["dim",  `config: 加载 config/default.yaml（1.2 KB）`],
+    ["info", `onebot:reverse-ws connecting → 127.0.0.1:8080（NapCat 4.8.1）`],
+    ["ok",   `onebot:reverse-ws connected · 心跳 30s`],
+    ["info", `[WebUI] listening on http://127.0.0.1:5099`],
+    ["ok",   `[WebUI] initial credentials: user=admin password=${slToken}`],
+    ["dim",  `[WebUI] 凭据仅首次启动显示 · 管理器已增量扫描提取 → 程序详情 webui 字段（WS program.webui 推送到控制台）`],
+    ["info", `event-bus: subscribed message.group / message.private`],
+    ["ok",   `startup complete in 1.8s`],
+  ], [
+    { msg: () => `event-bus: dispatch ${pick(["message.group", "message.private", "notice.friend_add"])} → 1 handler` },
+    { msg: () => `p0 queue: ${ri(1, 2)} item dispatched → dialog pipeline` },
+    { lvl: "dim", msg: () => `ws: ping/pong ok (${ri(8, 24)}ms)` },
+    { lvl: "dim", msg: () => `mem: rss ${ri(178, 194)}MB · gc ${ri(2, 6)}ms` },
+    { msg: () => `ratelimit: group g_1 tokens=${ri(18, 26)}/${30}` },
+    { msg: () => `llm: chat completion ${ri(760, 2100)}ms · model=deepseek-chat` },
+    { lvl: "dim", msg: () => `obs: retained ${ri(1, 3)} events → hindsight` },
+    { msg: () => `onebot: send_group_msg ok · msg_id=${ri(10000, 99999)}` },
+  ], 96);
+
+  M.programLogFull.hindsight = buildLogs(8, 1, [
+    ["info", `docker compose up -d（镜像 ghcr.io/me-agent/hindsight:1.4.0）`],
+    ["dim",  `Pulling ghcr.io/me-agent/hindsight:1.4.0 …`],
+    ["dim",  `a3f8c21: Pull complete · 41.2MB`],
+    ["dim",  `b91e04d: Pull complete · 8.6MB`],
+    ["dim",  `6c2aa3f: Extracting · 12.4MB/38.2MB`],
+    ["ok",   `Container hindsight 已启动（restart: unless-stopped）`],
+    ["ok",   `api: GET /healthz → 200 · retention=on`],
+    ["info", `obsidian bridge: vault projection 只读挂载 ~/ME_Agent/vault-projection`],
+  ], [
+    { msg: () => `retain: ${ri(1, 3)} events accepted（tick delta filter）` },
+    { msg: () => `observation: upserted '${pick(["37 周末晚上习惯安静", "37 在重构记忆模块", "群友小K 常问 Hindsight 配置"])}'` },
+    { msg: () => `recall: query '${pick(["WorldState 字段", "周末习惯", "TTS 桥接"])}' → ${ri(2, 6)} chunks` },
+    { lvl: "dim", msg: () => `healthz: 200 · retention=on · uptime ${ri(2, 9)}ms` },
+    { lvl: "dim", msg: () => `index: compact ${ri(120, 480)} events · ${ri(2, 5)}ms` },
+  ], 84);
+
+  M.programLogFull.obsidian_sync = buildLogs(0, 8, [
+    ["info", `syncer v1.0.1 启动 · 调度：每日 00:10 全量 + 事件触发增量`],
+    ["info", `snapshot: state/snapshots/2026-10-25.yaml committed（3.4 KB）`],
+    ["info", `projection: 12 files changed → git push origin main（a1b2c3d）`],
+  ], [
+    { lvl: "dim", msg: () => `watch: retain 事件 +5min 增量待命` },
+    { msg: () => `inject: ${ri(1, 3)} entries → knowledge bank` },
+    { msg: () => `git: commit ${Math.random().toString(16).slice(2, 9)} · push ok` },
+    { lvl: "dim", msg: () => `vault: ${ri(455, 462)} knowledge files · ${ri(390, 400)} synced` },
+  ], 62);
+
+  M.programLogFull.mimo_tts = buildLogs(9, 4, [
+    ["info", `tts-bridge v0.3.1 启动 · 上游 api.xiaomimimo.com/v1/chat/completions`],
+    ["dim",  `voicebank: 预设 9 音色已加载（冰糖/茉莉/苏打…）`],
+    ["ok",   `健康检查通过 · 上游延迟 412ms`],
+  ], [
+    { msg: () => `synthesize: voice=${pick(["冰糖", "茉莉", "苏打", "白桦"])} len=${ri(20, 96)}chars dur=${(1 + Math.random() * 2).toFixed(1)}s cache=${pick(["hit", "miss", "miss"])}` },
+    { lvl: "dim", msg: () => `cache: ${ri(12, 44)} entries · hit rate ${(70 + Math.random() * 20).toFixed(0)}%` },
+    { lvl: "warn", msg: () => `upstream timeout，重试 ${ri(1, 2)}/2 后成功` },
+  ], 78);
+
+  M.programLogFull.napcat = buildLogs(7, 58, [
+    ["info", `NapCat 4.8.1 启动 · OneBot v11 · pid=932`],
+    ["dim",  `login: qrcode 生成 · 等待扫码`],
+    ["ok",   `login: qrcode refresh ok`],
+    ["ok",   `login: 已登录（37）· session 建立`],
+    ["info", `ws: connecting to SnowLuma（reverse）`],
+    ["ok",   `ws: connected to SnowLuma（reverse）`],
+  ], [
+    { msg: () => `msg: group g_1 recv ${ri(20, 30)}/h · filter 通过` },
+    { lvl: "warn", msg: () => `risk-control ping ${ri(780, 860)}ms（threshold 800ms）` },
+    { lvl: "dim", msg: () => `heartbeat: ${ri(2, 9)}s · ws alive` },
+    { msg: () => `msg: private p_1 recv · P0 转发` },
+    { lvl: "warn", msg: () => `signature: 服务器延迟 ${ri(300, 900)}ms` },
+  ], 92);
+
+  /* 日志跟随池：日志查看器打开时运行中程序每 2~3s 追加（演示自动滚底）——同样为字符串行 */
+  const FOLLOW = {
+    snowluma: [
+      { lvl: "info", msg: () => `event-bus: dispatch ${pick(["message.group", "message.private"])} → 1 handler` },
+      { lvl: "dim", msg: () => `ws: ping/pong ok（${ri(8, 24)}ms）` },
+      { lvl: "dim", msg: () => `mem: rss ${ri(178, 194)}MB` },
+      { msg: () => `p0 queue: ${ri(1, 2)} item dispatched → dialog pipeline` },
+    ],
+    hindsight: [
+      { msg: () => `retain: ${ri(1, 3)} events accepted（tick delta filter）` },
+      { msg: () => `recall: query 'WorldState 字段' → ${ri(2, 6)} chunks` },
+      { lvl: "dim", msg: () => `healthz: 200 · retention=on` },
+    ],
+    obsidian_sync: [
+      { lvl: "dim", msg: () => `watch: retain 事件 +5min 增量待命` },
+      { msg: () => `inject: ${ri(1, 3)} entries → knowledge bank` },
+    ],
+    mimo_tts: [
+      { msg: () => `synthesize: voice=${pick(["冰糖", "茉莉"])} len=${ri(20, 90)}chars cache=${pick(["hit", "miss"])}` },
+      { lvl: "dim", msg: () => `cache: ${ri(12, 44)} entries` },
+    ],
+    napcat: [
+      { lvl: "dim", msg: () => `heartbeat: ${ri(2, 9)}s · ws alive` },
+      { lvl: "warn", msg: () => `risk-control ping ${ri(780, 860)}ms（threshold 800ms）` },
+      { msg: () => `msg: group g_1 recv · filter 通过` },
+    ],
+  };
+  M.programLogFollow = function (id) {
+    const pool = FOLLOW[id];
+    if (!pool || !pool.length) return [];
+    const n = Math.random() < 0.35 ? 2 : 1;
+    const now = new Date();
+    const t = `${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const tpl = pool[Math.floor(Math.random() * pool.length)];
+      out.push(`[${t}] ${String(tpl.lvl || "info").toUpperCase().padEnd(5, " ")} ${typeof tpl.msg === "function" ? tpl.msg() : tpl.msg}`);
+    }
+    return out;
+  };
+
+  /* ---------- 2) 演示状态持久化（跨刷新稳定） ---------- */
+  M.LS_KEY = "console.mock.programs.v5";
+  M._programsDefault = JSON.parse(JSON.stringify(M.programs));
+  try {
+    const raw = localStorage.getItem(M.LS_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      M.programs.forEach(p => { if (saved[p.id]) Object.assign(p, saved[p.id]); });
+    }
+  } catch (e) { /* 快照损坏则回到默认演示态 */ }
+
+  M.persistPrograms = function () {
+    try {
+      const snap = {};
+      M.programs.forEach(p => {
+        if (p.status === "busy") return;              // busy 不落盘：刷新回到动作前状态
+        snap[p.id] = { status: p.status, version: p.version, latest: p.latest, proc: p.proc, webui: p.webui || {} };
+      });
+      localStorage.setItem(M.LS_KEY, JSON.stringify(snap));
+    } catch (e) { /* localStorage 不可用等场景静默 */ }
+  };
+  M.resetPrograms = function () {
+    try { localStorage.removeItem(M.LS_KEY); } catch (e) {}
+    M.programs.forEach((p, i) => {
+      const d = M._programsDefault[i];
+      if (!d) return;
+      ["status", "version", "latest", "proc", "webui"].forEach(k => {
+        if (k in d) p[k] = JSON.parse(JSON.stringify(d[k]));
+        else delete p[k];
+      });
+      delete p.busy_action;
+      delete p.progress;
+    });
+  };
+
+  /* ---------- 3) 长动作进度驱动（契约同构 · 第 11 轮清单 §1） ----------
+     progress 两种形态：
+       字节型 {phase:"download", downloaded, total, percent, speed_bps, done?} —— github_release 资产下载
+              （终态 done=true 且 percent=100；content-length 未知时 total=0 且 percent=null 不瞎编）
+       阶段型 {phase:"extract"|"pull", detail:"…"} —— 解压 / docker 拉镜像（无字节级语义）
+     通道：busy 轮询读 GET /programs 的 progress 字段 + WS program.progress 推送
+     （此处派发同名 document 事件，0.5s 节流真实口径下演示 tick ≈0.6s）。 */
+  M.driveProgress = function (p, action, cfg) {
+    /* cfg：{ total 字节, speed 平均字节/s, tickMs, kind: "release"|"docker", layers, abortAt? }
+       abortAt —— 故障演练：下载至该比例时中断（与 drillFailures 配合）。 */
+    return new Promise(resolve => {
+      const kind = cfg.kind || "release";
+      const layers = cfg.layers || 7;
+      const tickMs = cfg.tickMs || 650;
+      let downloaded = 0, avgSum = 0, avgN = 0;
+      const push = prog => {
+        p.progress = prog;
+        document.dispatchEvent(new CustomEvent("program:progress", { detail: Object.assign({ id: p.id }, prog) }));
+      };
+      const iv = setInterval(() => {
+        const speed = cfg.speed * (0.72 + Math.random() * 0.56);   // 速度抖动
+        avgSum += speed; avgN++;
+        downloaded += speed * (tickMs / 1000);
+        const frac = downloaded / cfg.total;
+
+        if (cfg.abortAt != null && frac >= cfg.abortAt) {           // 故障演练：下载中断
+          clearInterval(iv);
+          delete p.progress;
+          resolve({ aborted: true });
+          return;
+        }
+        if (frac >= 1) {                                            // 下载完成 → 终态 → 收尾阶段
+          clearInterval(iv);
+          push({ phase: "download", downloaded: Math.round(cfg.total), total: Math.round(cfg.total), percent: 100, speed_bps: 0, done: true });
+          push({ phase: "extract", detail: kind === "docker" ? "创建并启动容器 → 恢复挂载" : `解压 → ${p.dir || "运行目录"} · 平滑重启` });
+          setTimeout(() => {
+            delete p.progress;                                      // 完成/失败均收口清零（契约）
+            resolve({ aborted: false, avg_bps: Math.round(avgSum / Math.max(1, avgN)) });
+          }, 2200);
+          return;
+        }
+        if (kind === "docker") {
+          /* docker 无字节级语义 → 阶段型（契约 §1 表格） */
+          push({ phase: "pull", detail: `拉取镜像层 ${Math.min(layers, 1 + Math.floor(frac * layers))}/${layers}` });
+        } else {
+          push({
+            phase: "download",
+            downloaded: Math.round(downloaded), total: Math.round(cfg.total),
+            percent: +(frac * 100).toFixed(1), speed_bps: Math.round(speed),
+          });
+        }
+      }, tickMs);
+    });
+  };
+})(MOCK);
 
 window.MOCK = MOCK;
