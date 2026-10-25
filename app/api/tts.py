@@ -199,21 +199,17 @@ async def synthesize(request: Request, body: TTSSynthesizeIn):
 
     out = await ctx.tts.synthesize(body.text, voice=voice, provider_id=p.id)
     if not out.get("ok"):
-        return {"ok": False, "error": out.get("error", "synth failed"),
-                "detail": out.get("result", {}).get("error", "")}
-    res = out.get("result", {})
-    audio: bytes = res.get("audio") or b""
-    mime = res.get("mime") or "audio/mpeg"
-    entry = ctx.tts_store.put_cache(audio, mime, p.id, body.text, voice or "")
+        return {"ok": False, "error": out.get("error", "synth failed")}
+    # TTSService.synthesize 内部已完成合成+缓存, 返回 {url, mime, bytes, elapsed_ms, debug}
     return {
         "ok": True,
         "engine": "server",
         "provider_kind": KIND_BY_TYPE.get(body.modelType, p.kind),
-        "audio_url": entry["url"],
-        "mime": mime,
-        "bytes": entry["bytes"],
-        "elapsed_ms": res.get("elapsed_ms"),
-        "sha256_16": res.get("debug", {}).get("body_sha", ""),
+        "audio_url": out.get("url"),
+        "mime": out.get("mime") or "audio/mpeg",
+        "bytes": out.get("bytes", 0),
+        "elapsed_ms": out.get("elapsed_ms"),
+        "sha256_16": (out.get("debug") or {}).get("body_sha", ""),
     }
 
 

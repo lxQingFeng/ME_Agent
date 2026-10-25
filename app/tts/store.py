@@ -170,7 +170,7 @@ class ProviderStore:
         meta[cid] = {"file": f.name, "mime": mime or f"audio/{ext}", "provider": provider_id,
                      "text": text[:120], "voice": voice, "bytes": len(audio), "ts": time.time()}
         self.cache_meta_path().write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
-        return {"audio_id": cid, "url": f"/api/tts/audio/{cid}", "mime": meta[cid]["mime"],
+        return {"audio_id": cid, "url": f"/api/v1/tts/audio/{cid}", "mime": meta[cid]["mime"],
                 "bytes": len(audio)}
 
     def get_cache(self, cid: str) -> dict | None:
