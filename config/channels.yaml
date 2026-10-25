@@ -1,9 +1,17 @@
-# SnowLuma ⇄ OneBot v11 反向 WS 通道
+# SnowLuma / 协议端 ⇄ OneBot v11 通道(双模)
 onebot:
+  # 通道模式(2026-10-25 补强):
+  #   reverse(默认) = 被动监听: 协议端(SnowLuma)反向 WS 连入本服务, 走 listen_port + ws_path;
+  #   forward       = 正向外连: 本服务主动连接协议端的正向 WS 服务(NapCat/Lagrange 等,
+  #                  云部署无需公网监听端口), 断线自动重连自愈。
+  # 环境变量可覆盖: ME_ONEBOT_MODE / ME_ONEBOT_WS_URL / ME_ONEBOT_RECONNECT_S(联调与测试用)。
+  mode: reverse
+  ws_url: ws://127.0.0.1:3001      # forward 模式: 协议端正向 WS 服务地址
+  reconnect_interval_s: 5           # forward 断线重连间隔(秒, 下限 1)
   listen_host: 0.0.0.0
   listen_port: 8000            # 控制台统一端口: REST + /onebot(WS) + /api/ws(WS)
   ws_path: /onebot
-  access_token_env: ONEBOT_ACCESS_TOKEN   # SnowLuma 侧配同一个 token
+  access_token_env: ONEBOT_ACCESS_TOKEN   # 协议端侧配同一个 token
   self_qq: ""                  # 留空则从首次连接的 lifecycle 事件自动学习
   group_whitelist: []          # 空列表=不限制(单群自用模式)
   admin_qq: []                 # 管理员 QQ(可触发管理指令)

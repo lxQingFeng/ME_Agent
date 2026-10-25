@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from app.api.sanitizer import is_masked, mask_display
 from app.api.schemas import TTSConfigIn, TTSProbeIn, TTSSynthesizeIn
 from app.tts.models import ClonedVoice, TTSProvider
 from app.tts.store import _base_from_endpoint
@@ -58,15 +59,12 @@ def _load_or_init_default(ctx) -> TTSProvider:
 
 
 def _masked_key(key: str) -> str:
-    if not key:
-        return ""
-    if len(key) <= 8:
-        return "***"
-    return key[:4] + "***" + key[-4:]
+    # 2026-10-25 补强: 统一走 sanitizer 展示脱敏(不再保留首尾 4 字符明文片段)
+    return mask_display(key)
 
 
 def _is_masked(key: str) -> bool:
-    return bool(key) and "***" in key
+    return is_masked(key)
 
 
 @router.get("/config")

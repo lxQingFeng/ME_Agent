@@ -57,7 +57,10 @@ class Settings:
         if self._state_dir_override is not None:
             self._state_dir_override.mkdir(parents=True, exist_ok=True)
             return self._state_dir_override
-        d = self.root / (self.console.get("state_dir", "state"))
+        # ME_STATE_DIR 环境覆盖: 测试/多实例(实例锁按 state 目录隔离)
+        override = os.environ.get("ME_STATE_DIR", "").strip()
+        d = (Path(override) if override else
+             self.root / (self.console.get("state_dir", "state")))
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -71,6 +74,27 @@ class Settings:
 
     def onebot_token(self) -> str:
         return self.env(self.channels.get("onebot", {}).get("access_token_env", "ONEBOT_ACCESS_TOKEN"))
+
+    # ---- 通道双模(2026-10-25 补强): reverse=被动监听 / forward=正向外连 ----
+
+    def onebot_mode(self) -> str:
+        m = os.environ.get("ME_ONEBOT_MODE", "").strip().lower()
+        if m not in ("reverse", "forward"):
+            m = str(self.channels.get("onebot", {}).get("mode", "reverse")).strip().lower()
+        return m if m in ("reverse", "forward") else "reverse"
+
+    def onebot_forward_url(self) -> str:
+        u = os.environ.get("ME_ONEBOT_WS_URL", "").strip()
+        return u or str(self.channels.get("onebot", {}).get("ws_url", "")).strip()
+
+    def onebot_reconnect_interval(self) -> float:
+        raw = os.environ.get("ME_ONEBOT_RECONNECT_S", "").strip()
+        if not raw:
+            raw = str(self.channels.get("onebot", {}).get("reconnect_interval_s", 5)).strip()
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return 5.0
 
     def internal_token(self) -> str:
         return self.env(self.console.get("internal_token_env", "ME_INTERNAL_TOKEN"))

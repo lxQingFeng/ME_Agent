@@ -8,6 +8,7 @@ create_app(ctx) 装配全部路由:
   /api/v1/programs/* 第三方程序(状态/动作/日志)
   /api/v1/tts/*      TTS 全套(模型/配置/检查/试合成/克隆)
   /api/v1/system/*   健康检查/全系统状态/引擎控制
+  /api/v1/diagnostics/export  诊断包导出(密钥全部脱敏为 hasXxx 指纹)
   /api/ws            控制台实时推送(WS)
   /onebot            OneBot v11 反向 WS(SnowLuma 接入)
   /console           控制台前端(静态托管, 纯离线单页)
@@ -23,7 +24,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import chat, plugins, programs, system, tts, world
+from app.api import chat, diagnostics, plugins, programs, system, tts, world
 from app.api.ws import ws_router
 from app.memory.webhooks import webhook_router
 
@@ -56,12 +57,13 @@ def create_app(ctx) -> FastAPI:
     app.include_router(programs.router)
     app.include_router(tts.router)
     app.include_router(system.router)
+    app.include_router(diagnostics.router)
     app.include_router(webhook_router(ctx.settings, ctx.bus))
 
     # ---- WS 路由 ----
     app.include_router(ws_router(ctx.bus))
 
-    # ---- OneBot v11 反向 WS(SnowLuma 接入口) ----
+    # ---- OneBot v11 反向 WS(SnowLuma 接入口; forward 模式下拒绝接入防误配) ----
     ob = ctx.settings.channels.get("onebot", {})
     ws_path = ob.get("ws_path", "/onebot")
     gw = ctx.gateway

@@ -1,10 +1,13 @@
-"""第三方程序管理器:下载/更新/一键接入/启停/进程状态监控。
+"""第三方程序管理器:健康探测/状态监控/一键接入为主(2026-10-25 收缩)。
 
-形态(来自 config/programs.yaml):
-- github_release: 从 GitHub Release 拉资产(zip/tar.gz), 解压到 state/programs/opt/<id>/<version>/
-- docker: docker 容器形态(NapCat / Hindsight 首选)
-- internal: 进程内服务(Obsidian 同步器), start/stop 控制其 asyncio 任务
-- binary/manual: 用户侧手动安装启动(SnowLuma Windows 桌面形态), 状态由 health 探测
+部署哲学(参照 K0nd1us/QQ-agent 0.5 的回撤结论):协议端与外部程序「归用户,
+app 只管应用层」——主路径定位「外部自管 + 健康探测」:
+- external(主路径): 用户侧自行安装启动, 本管理器只做健康探测(http/ws_event)
+  与状态播报, 不提供启停/安装动作;
+- internal: 进程内服务(Obsidian 同步器), start/stop 控制其 asyncio 任务;
+- binary/manual + run.command: 少数自管进程可 spawn(保留);
+- github_release 下载安装与 docker spawn 降级为「可选增强」: 配置里保留
+  source/docker 字段才启用, 默认注册表不再依赖(见 config/programs.yaml 注释)。
 
 运行规则:
 - run.command 存在 → 由本管理器 spawn 子进程, 日志落 state/programs/logs/<id>.log;
@@ -175,6 +178,11 @@ class ProgramManager:
             return {"ok": False, "error": "unknown program"}
         st = self._st(pid)
         kind = d.get("kind", "binary")
+        if kind == "external":
+            # 主路径: 外部自管, 不代管安装(可选增强未配置 source/docker 时到不了别处)
+            return {"ok": False, "external": True,
+                    "error": "外部自管程序不由本管理器安装",
+                    "hint": d.get("install_hint", "请参照项目 homepage 手动安装")}
         src = d.get("source") or {}
         if src.get("type") == "github_release":
             rel = await self._latest_release(pid)
@@ -229,6 +237,10 @@ class ProgramManager:
             return {"ok": False, "error": "unknown program"}
         st = self._st(pid)
         kind = d.get("kind", "binary")
+        if kind == "external":
+            return {"ok": False, "external": True,
+                    "error": "外部自管程序不由本管理器启动",
+                    "hint": d.get("install_hint", "请手动启动; 启动后本管理器会通过 run.health 自动探测")}
         if kind == "internal":
             return self._internal_start(pid)
         if kind == "docker":
@@ -273,6 +285,10 @@ class ProgramManager:
         if not d:
             return {"ok": False, "error": "unknown program"}
         kind = d.get("kind", "binary")
+        if kind == "external":
+            return {"ok": False, "external": True,
+                    "error": "外部自管程序不由本管理器停止",
+                    "hint": "请在其自身控制台/服务管理器中停止"}
         if kind == "internal":
             return self._internal_stop(pid)
         if kind == "docker":
@@ -324,22 +340,30 @@ class ProgramManager:
                     "guide": "已确保 qq-agent / knowledge 两个记忆库存在; recall/retain 走 memory.yaml 配置。"}
         if mode == "write_onebot_config":
             ob = self.settings.channels.get("onebot", {})
+            gw_mode = self.settings.onebot_mode()
             snippet = {
+                "mode": gw_mode,
                 "listen_host": ob.get("listen_host", "0.0.0.0"),
                 "listen_port": ob.get("listen_port", 8000),
                 "ws_path": ob.get("ws_path", "/onebot"),
                 "access_token_env": ob.get("access_token_env", "ONEBOT_ACCESS_TOKEN"),
                 "reverse_ws_url": f"ws://127.0.0.1:{ob.get('listen_port', 8000)}{ob.get('ws_path', '/onebot')}",
+                "forward_ws_url": self.settings.onebot_forward_url(),
             }
             f = self.root / f"onebot-{pid}.yaml"
             import yaml
             f.write_text(yaml.safe_dump({"onebot_connection": snippet}, allow_unicode=True), "utf-8")
             self._log(pid, f"[integrate] 对接参数已写入 {f}")
             await self._notify(pid)
-            return {"ok": True, "mode": "write_onebot_config", "snippet_file": str(f),
-                    "guide": (f"在 {d.get('name', pid)} 配置页填反向 WS 地址 {snippet['reverse_ws_url']}, "
-                              f"并设置相同 access token(环境变量 {snippet['access_token_env']}); "
-                              f"连接后 self_qq 会自动学习。")}
+            if gw_mode == "forward":
+                guide = (f"当前为 forward 正向外连模式: 在 {d.get('name', pid)} 开启正向 WS 服务后, "
+                         f"把地址填到 config/channels.yaml 的 ws_url(当前 {snippet['forward_ws_url']}), "
+                         f"并设置相同 access token(环境变量 {snippet['access_token_env']})。")
+            else:
+                guide = (f"当前为 reverse 反向模式: 在 {d.get('name', pid)} 配置页填反向 WS 地址 "
+                         f"{snippet['reverse_ws_url']}, 并设置相同 access token"
+                         f"(环境变量 {snippet['access_token_env']}); 连接后 self_qq 会自动学习。")
+            return {"ok": True, "mode": "write_onebot_config", "snippet_file": str(f), "guide": guide}
         if mode == "open_vault":
             vd = self.settings.vault_dir
             self._log(pid, f"[integrate] vault 目录: {vd}")
@@ -361,8 +385,13 @@ class ProgramManager:
             gw = self.gateway
             if gw is not None:
                 s = gw.status()
-                return {"type": "ws_event", "status": "running" if s.get("connected") and s.get("heartbeat_ok") else "stopped",
-                        "detail": "onebot 反向 WS 在线" if s.get("connected") else "未连接"}
+                ok = s.get("connected") and s.get("heartbeat_ok")
+                detail = "onebot WS 在线" if s.get("connected") else "未连接"
+                if s.get("mode") == "forward":
+                    detail = f"forward 外连({s.get('forward_url', '')})" if s.get("connected") else \
+                             f"forward 外连断开{s.get('last_error') or ''}"
+                return {"type": "ws_event", "status": "running" if ok else "stopped",
+                        "detail": detail}
         if t == "internal":
             if self.obsidian is not None:
                 s = self.obsidian.status()
@@ -415,13 +444,16 @@ class ProgramManager:
             if hstat == "running" and base in ("installed", "error", "stopped"):
                 st["status"] = "running"
                 self._save_state()
+            if d.get("kind") == "external":
+                # 外部自管: 状态即健康探测结果, 不存在「未安装」生命周期位
+                status = hstat if hstat in ("running", "stopped") else "stopped"
             out.append({
                 "id": pid,
                 "name": d.get("name", pid),
                 "tag": d.get("tag", d.get("kind", "")),
                 "desc": d.get("description", ""),
                 "kind": d.get("kind", ""),
-                "status": status if st.get("status") != "not_installed" or status != "stopped" else "not_installed",
+                "status": status,
                 "version": st.get("version") or "-",
                 "latest": st.get("latest") or "-",
                 "proc": self._proc_info(pid),
@@ -434,7 +466,13 @@ class ProgramManager:
         return out
 
     def _actions(self, d: dict, st: dict, status: str) -> list[str]:
-        acts = []
+        acts: list[str] = []
+        if d.get("kind") == "external":
+            # 外部自管: 只保留日志与一键接入, 不代管安装/启停
+            acts.append("log")
+            if d.get("integrate"):
+                acts.append("integrate")
+            return acts
         if d.get("source"):
             acts.append("update")
         acts.append("stop" if status == "running" else "start")

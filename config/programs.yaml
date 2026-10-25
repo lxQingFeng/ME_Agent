@@ -1,52 +1,45 @@
-# 第三方开源程序注册表(程序管理器) —— source 可被 API 覆盖
+# 第三方程序注册表(程序管理器) —— source 可被 API 覆盖
+#
+# 口径(2026-10-25 收缩, 参照 K0nd1us/QQ-agent 0.5 部署哲学):
+# 主路径 = 「外部自管 + 健康探测」: kind=external, 用户自行安装启动,
+# 管理器只做 run.health 探测(http / ws_event)与状态播报, 不代管安装/启停。
+# github_release 下载安装与 docker spawn 降级为「可选增强」: 给某个程序加
+# source:{type: github_release,...} 或 docker:{...} 字段并去掉 kind: external
+# 即恢复对应能力, 其余行为不变。
+
 programs:
   - id: hindsight
     name: Hindsight 记忆引擎
-    kind: docker
-    tag: 记忆系统          # 首选 docker 形态;无 docker 时可退 binary
+    kind: external
+    tag: 记忆系统
     description: 长期记忆(MIT, PostgreSQL+pgvector, MCP 内置, fs mount 投影)
     homepage: https://github.com/vectorize-io/hindsight
-    source:
-      type: github_release
-      repo: vectorize-io/hindsight
-      asset_pattern: "linux.*tar|\\.tar\\.gz$|\\.zip$"
-      version: latest
-    docker:
-      image: hindsight/hindsight:latest     # 示例: 以官方 README 镜像名为准
-      container_name: me-agent-hindsight
-      ports: ["8888:8888"]
-      volumes: ["hindsight-data:/data"]
-    run:                  # binary 退路(安装后生成 run.json 可改)
-      command: null       # 安装时探测生成
-      health: {type: http, url: http://127.0.0.1:8888/health, interval_s: 30}
-    integrate: create_banks   # 一键接入: 建 qq-agent/knowledge 两 bank + 写 memory.yaml
-  - id: snowluma
-    name: SnowLuma(OneBot v11 协议端)
-    kind: binary          # Windows 桌面形态(launcher.bat); 服务器侧可用 Docker.Framework
-    description: NTQQ hook 系协议端, 反向 WS 出站(源码可见非商业许可, 自用合法, 严禁再分发)
-    homepage: https://github.com/SnowLuma/SnowLuma
-    source:
-      type: github_release
-      repo: SnowLuma/SnowLuma
-      asset_pattern: "\\.zip$"
-      version: latest
+    install_hint: "外部自管——自行部署 Hindsight(官方 compose 或二进制), 确保 http://127.0.0.1:8888/health 可访问; 可选增强: 加 source/docker 字段恢复代管安装"
     run:
-      command: null       # Windows 侧由用户手动启动(launcher.bat); 服务器形态填 docker 命令
-      health: {type: ws_event, interval_s: 30}   # 以 /onebot 连接与心跳判定
-    integrate: write_onebot_config  # 一键接入: 生成 channels.yaml 对接参数 + 安装指引
+      command: null       # 外部自管: 不由本管理器 spawn
+      health: {type: http, url: http://127.0.0.1:8888/health, interval_s: 30}
+    integrate: create_banks   # 一键接入: 建 qq-agent/knowledge 双 bank
+  - id: snowluma
+    name: SnowLuma(QQ 协议端)
+    kind: external
+    tag: QQ 通道·主
+    description: OneBot v11 协议端(Windows 桌面形态; 用户自装自管, 登录在协议端侧完成)
+    homepage: https://github.com/lxQingFeng/ME_Agent   # 占位: 以用户实际取得的发行渠道为准
+    install_hint: "外部自管——自行安装启动 SnowLuma, 在其设置中配置 OneBot 连接(见 integrate 一键接入); 通道双模见 config/channels.yaml"
+    run:
+      command: null       # 协议端永远外部自管(许可+维护负担, 2026-10-25 定论)
+      health: {type: ws_event, interval_s: 30}
+    integrate: write_onebot_config
   - id: napcat
     name: NapCat(备选协议端)
-    kind: docker
+    kind: external
     tag: QQ 通道·备
-    description: 备用 OneBot v11 协议端(方案三中的 B 通道)
+    description: 备用 OneBot v11 协议端(方案三中的 B 通道, 正向 WS 服务形态)
     homepage: https://github.com/NapNeko/NapCatQQ
-    source: {type: github_release, repo: NapNeko/NapCat, asset_pattern: "\\.zip$", version: latest}
-    docker:
-      image: mlikiowa/napcat-docker:latest
-      container_name: me-agent-napcat
-      ports: ["6099:6099"]
-      volumes: ["napcat-config:/app/napcat/config"]
-    run: {command: null, health: {type: ws_event, interval_s: 30}}
+    install_hint: "外部自管——自行安装 NapCatShell/NapCatDocker 并开启正向 WS 服务, 地址填 config/channels.yaml 的 ws_url; 可选增强: 加 docker 字段恢复容器代管"
+    run:
+      command: null
+      health: {type: ws_event, interval_s: 30}
     integrate: write_onebot_config
   - id: obsidian_sync
     name: Obsidian 同步器

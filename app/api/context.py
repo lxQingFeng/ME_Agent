@@ -33,6 +33,7 @@ from app.memory.obsidian import ObsidianChannel
 from app.outbound.shaper import OutboundShaper
 from app.plugins.registry import PluginRegistry
 from app.programs.manager import ProgramManager
+from app.telemetry.errors import RecentErrors
 from app.tts.bridge import TTSService
 from app.tts.store import ProviderStore
 
@@ -89,6 +90,11 @@ class AppContext:
         self.programs = ProgramManager(settings, bus=self.bus, memory=self.memory,
                                        obsidian=self.obsidian, gateway=self.gateway)
 
+        # ---- 近期错误环(诊断导出数据源: logging + bus 降级事件) ----
+        self.telemetry = RecentErrors(capacity=50)
+        self.telemetry.attach_logging()
+        self.telemetry.attach_bus(self.bus)
+
         # ---- 生命周期 ----
         if start_engine is None:
             start_engine = bool(settings.console.get("engine", {}).get("auto_start", True))
@@ -115,6 +121,11 @@ class AppContext:
         # 程序监控(进程状态轮询 + program.status 事件)
         await self.programs.start_monitor()
 
+        # 通道 forward 模式: 正向外连循环(断线自动重连自愈)
+        t = self.gateway.start_forward()
+        if t is not None:
+            self.tasks.append(t)
+
         # 恢复自动启停的第三方程序(如 obsidian 同步 internal 任务)
         try:
             await self.programs.autostart()
@@ -127,6 +138,11 @@ class AppContext:
         self.bus.emit("system.started", {"pid": True, "ts": time.time()})
 
     async def shutdown(self) -> None:
+        # 先停 forward 外连循环(优雅关闭当前连接, 不留僵尸任务)
+        try:
+            await self.gateway.stop_forward()
+        except Exception:
+            pass
         for t in self.tasks:
             t.cancel()
         for t in self.tasks:

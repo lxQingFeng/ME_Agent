@@ -6,10 +6,16 @@
   python -m app --tick-seconds 5      # 心拍加速(联调; 生产 300)
   python -m app --no-engine           # 只起 API 服务(前端联调/冒烟)
 
+单实例锁(2026-10-25 补强): state/ 下 claim 票据, 同一 state 目录双开直接拒绝;
+换独立实例请设 ME_STATE_DIR=<其他目录>。
+
 环境变量: .env 自动加载(config/.env → 项目根 .env); 关键项:
   ME_INTERNAL_TOKEN   插件回连令牌
   ONEBOT_ACCESS_TOKEN OneBot 鉴权(与 SnowLuma 侧一致)
   DEEPSEEK_API_KEY    LLM(不配则对话降级为占位回复)
+  ME_STATE_DIR        state 目录覆盖(多实例/测试)
+  ME_ONEBOT_MODE      通道模式覆盖(reverse|forward)
+  ME_ONEBOT_WS_URL    forward 模式协议端地址覆盖
 """
 from __future__ import annotations
 
@@ -17,6 +23,8 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+
+from app.instancelock import InstanceLockError, instance_lock
 
 log = logging.getLogger("app")
 
@@ -39,11 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    import uvicorn
-
     from app.config import Settings
-    from app.api.context import AppContext
-    from app.api import create_app
 
     settings = Settings()
     host = args.host or settings.console.get("host", "0.0.0.0")
@@ -52,7 +56,24 @@ def main(argv: list[str] | None = None) -> int:
         settings.console.setdefault("engine", {})
         settings.console["engine"]["tick_seconds"] = args.tick_seconds
 
-    ctx = AppContext(settings, start_engine=not args.no_engine)
+    try:
+        with instance_lock(settings.state_dir):
+            return _serve(settings, host, port, start_engine=not args.no_engine)
+    except InstanceLockError as e:
+        # 双实例启动: 明确报错 + 修复指引, 直接拒绝(2026-10-25 补强第 1 项)
+        msg = f"启动被拒绝: {e}"
+        print(f"\n[ME_Agent] {msg}\n", file=sys.stderr)
+        log.error(msg)
+        return 2
+
+
+def _serve(settings, host: str, port: int, start_engine: bool = True) -> int:
+    import uvicorn
+
+    from app.api import create_app
+    from app.api.context import AppContext
+
+    ctx = AppContext(settings, start_engine=start_engine)
     app = create_app(ctx)
 
     log.info("ME_Agent 启动: http://%s:%s (console=%s onebot_ws=%s push_ws=/api/ws)",
