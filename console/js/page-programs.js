@@ -27,6 +27,16 @@
     return `<span class="svc-tag"><span class="svc-dot" data-state="${s.tone}"></span>${s.label}</span>`;
   }
 
+  /* 模式徽标（V3 新定位）：外部自管为主，一键接入为可选增强。
+     按 actions 推导 —— 含 install / one-click 即具备可选增强能力，其余为外部自管（控制台仅健康探测）。 */
+  function manageBadge(p) {
+    const acts = p.actions || [];
+    const assist = acts.includes("install") || acts.includes("one-click");
+    return assist
+      ? `<span class="chip amber" style="font-size:10px;padding:1px 7px;margin-left:4px" title="控制台可代为下载安装并配置启动——可选增强">一键接入 · 可选增强</span>`
+      : `<span class="chip blue" style="font-size:10px;padding:1px 7px;margin-left:4px" title="由你自行部署与管理；控制台仅做健康探测（HTTP / WS 事件）与监控">外部自管</span>`;
+  }
+
   function procTable(p) {
     const pr = p.proc || {};
     const running = pr.pid;
@@ -49,7 +59,7 @@
         <div style="display:flex;gap:12px;align-items:center;min-width:0">
           <span class="program-logo" style="--logo-c:${p.color}">${esc(p.logo)}</span>
           <div style="min-width:0">
-            <div class="card-title">${esc(p.name)} <span class="chip gray" style="font-size:10px;padding:1px 7px;margin-left:4px">${esc(p.tag)}</span></div>
+            <div class="card-title">${esc(p.name)} <span class="chip gray" style="font-size:10px;padding:1px 7px;margin-left:4px">${esc(p.tag)}</span>${manageBadge(p)}</div>
             ${statusChip(p.status)}
           </div>
         </div>
@@ -74,7 +84,7 @@
       <div class="page-head">
         <div>
           <div class="page-title">${Icons.server} 第三方程序</div>
-          <div class="page-desc">控制台托管的独立组件 —— Docker 自托管，统一启停/更新/进程监控，日志尾部实时可查</div>
+          <div class="page-desc">外部程序以你自管为主 —— 控制台做健康探测与进程监控（日志尾部实时可查）；下载安装 / 一键接入为可选增强</div>
         </div>
         <button class="btn ghost" id="pgmRefresh">${Icons.refresh}<span>刷新</span></button>
       </div>
@@ -95,7 +105,9 @@
             <span class="chip amber">${programs.filter(p => p.status === "degraded").length} 告警</span>
             <span class="chip gray">${programs.filter(p => p.status === "stopped").length} 已停止</span>
             <span class="chip amber" id="pgmUpdates">${programs.filter(p => p.latest !== p.version).length} 个可更新</span>
-            <span style="color:var(--text-faint);font-size:12.5px">编排：docker compose（./deploy）· 健康检查 30s</span>
+            <span class="chip blue">${programs.filter(p => (p.actions || []).every(a => a !== "install" && a !== "one-click")).length} 外部自管</span>
+            <span class="chip amber">${programs.filter(p => (p.actions || []).some(a => a === "install" || a === "one-click")).length} 一键接入</span>
+            <span style="color:var(--text-faint);font-size:12.5px">健康探测：HTTP / WS 事件 · 30s 周期 · 下载安装与一键接入为可选增强</span>
           </div>
           ${programs.map(programCard).join("")}`;
         bindActions(body);

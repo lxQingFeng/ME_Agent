@@ -1,6 +1,6 @@
 # QQ Agent 中央控制台 — 前端
 
-> 世界心跳 · 对话流 · 插件技能 · 第三方程序 · TTS 语音管理
+> 世界心跳 · 对话流 · 插件技能 · 第三方程序 · TTS 语音管理 · 诊断导出（脱敏）
 > 纯静态单页应用（零构建 / 零运行时依赖），`index.html` 双击即用。
 
 ## 运行
@@ -16,9 +16,9 @@
 | `#/` | 总览 · 世界心跳 | WorldState 实时卡片（时间/天气/心情二维图/疲劳/所在地/活动/意图/想要），状态叙事预览、转移时间线，字段完全对齐《实现方案》§2.3 |
 | `#/chat` | 对话流 | 会话列表 + 消息流（P0–P4 事件分级、burst 合并、语音消息标识），支持发送测试消息 |
 | `#/plugins` | 插件技能 | passive/active 插件卡、启停开关、触发器与权限、skill.yaml manifest 预览 |
-| `#/programs` | 第三方程序 | 下载/更新/一键接入/启停/重启、进程状态（PID/内存/CPU/运行时长）、日志尾部 |
+| `#/programs` | 第三方程序 | 外部自管为主（健康探测/进程监控/日志尾部），一键接入为可选增强（卡片按 actions 自动推导模式徽标）；下载/更新/启停/重启、进程状态（PID/内存/CPU/运行时长） |
 | `#/tts` | TTS 语音 · API 管理 | 见下节 |
-| `#/settings` | 设置 | Mock/Live 切换、后端地址（对接总开关） |
+| `#/settings` | 设置 | Mock/Live 切换、后端地址（对接总开关）、诊断导出（脱敏） |
 
 ## TTS 模块（按 37 需求 10-25 10:11 原文实现）
 
@@ -54,6 +54,14 @@ API.LIVE_ROUTES // 全部 live 路由表，逐条对照实现即可
 | ttsSaveConfig | PUT /api/v1/tts/config | 密钥落盘加密、回显脱敏 |
 | ttsSynthesize | POST /api/v1/tts/synthesize | 试合成，返回音频 |
 | ttsUploadCloneAudio | POST /api/v1/tts/clone-audio | multipart 上传 |
+| exportDiagnostics | GET /api/v1/diagnostics/export | 脱敏诊断包（密钥一律 hasXxx 布尔指纹） |
+
+## 诊断导出模块（V3 · 诊断输出脱敏）
+
+- **入口**：设置页「诊断导出（脱敏）」卡 →「导出诊断包 .json」按钮，触发浏览器下载（文件名 `me-agent-diagnostics-YYYYMMDD-HHMM.json`）。
+- **内容**：`generated_at` / `uptime` / 组件健康 / 近期错误摘要 / 配置密钥指纹——**密键一律 `hasXxx:true` 布尔指纹形态，绝不包含原文**。
+- **脱敏形态预览**：导出后（Mock 模式自动载入同构演示数据）在卡片内直接展示高亮 JSON，`hasXxx` 指纹键绿色高亮，直观核对脱敏形态。
+- **客户端密钥自检（兜底防线）**：导出前扫描 JSON 原文形态（sk- / Bearer / AKIA / gh token / 密文键值对），命中即红条警告「请勿分发」，未命中绿条通过。
 
 **TTS 发送保真责任边界**：前端负责模板原文的编辑/落盘/占位符替换预览；实际 HTTP 发送由后端执行——后端拿到两段原文后**同样只做占位符替换，不得重序列化/改写**，才能保证端到端字节一致。
 

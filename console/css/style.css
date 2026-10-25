@@ -674,3 +674,36 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 .program-card[data-status="stopped"]:hover, .program-card[data-status="notinstalled"]:hover {
   opacity: 1;
 }
+
+/* ============================================================
+   诊断导出（V3 · 脱敏形态预览）
+   ============================================================ */
+.diag-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.diag-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
+.diag-meta { font-size: var(--fs-xs); color: var(--text-faint); }
+.diag-preview { margin-top: 14px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg); overflow: hidden; }
+.diag-preview-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 14px; background: var(--card-2); border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs); color: var(--text-dim); flex-wrap: wrap;
+}
+.diag-fp-legend { color: var(--text-faint); }
+.diag-preview pre {
+  margin: 0; padding: 14px 16px; max-height: 380px; overflow: auto;
+  font-size: 12.5px; line-height: 1.7; white-space: pre; color: var(--text-dim);
+}
+.diag-scan { padding: 9px 14px; border-top: 1px solid var(--border); font-size: var(--fs-xs); }
+.diag-scan .scan-ok, .diag-scan .scan-bad { display: inline-flex; align-items: center; gap: 6px; }
+.diag-scan .scan-ok { color: var(--accent); }
+.diag-scan .scan-bad { color: var(--red); }
+
+/* JSON 语法高亮（深空控制台配色） */
+.j-key { color: var(--blue); }
+.j-str { color: var(--accent); }
+.j-num { color: var(--amber); }
+.j-bool { color: var(--purple); }
+.j-null { color: var(--text-faint); }
+.j-fp { color: var(--accent); font-weight: 600; background: var(--accent-soft); border-radius: 3px; padding: 0 4px; }
+
+/* 加载图标旋转（修复既有 .spin 类缺动画） */
+.i.spin { animation: spin .7s linear infinite; }

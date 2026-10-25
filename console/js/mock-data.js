@@ -180,7 +180,7 @@ const MOCK = {
       desc: "每日 00:10 导出 WorldState 快照 + 记忆 vault git commit，人类可直接翻阅 Agent 大脑。",
       status: "stopped", version: "1.0.1", latest: "1.0.2",
       proc: { pid: null, mem_mb: 0, cpu: "—", uptime: "—", restarts: 0 },
-      actions: ["update", "start", "log"],
+      actions: ["one-click", "update", "start", "log"],
       color: "var(--cyan)",
       logo: "Ob", logs: ["[昨日 00:10] snapshot: state/snapshots/2026-10-24.yaml committed (3.1 KB)"],
     },
@@ -210,6 +210,34 @@ const MOCK = {
       ],
     },
   ],
+
+  /* ---------- 诊断导出：GET /api/v1/diagnostics/export 的同构演示数据 ----------
+     脱敏铁律：所有密钥仅以 hasXxx:true 布尔指纹出现，绝不出现原文。 */
+  diagnostics: {
+    generated_at: "2026-10-25T13:05:41+08:00",
+    agent: { name: "小满", version: "0.5.0", mode: "headless" },
+    uptime: "2天14小时6分",
+    uptime_sec: 224766,
+    components: [
+      { id: "kernel",          name: "内核装配",    status: "ok",      detail: "composition 完成 · tick #1042" },
+      { id: "onebot_gateway",  name: "OneBot 网关", status: "ok",      detail: "反向 WS 已连接 · NapCat 4.8.1" },
+      { id: "memory",          name: "记忆系统",    status: "ok",      detail: "retain / recall 正常 · 最近 recall 10:07" },
+      { id: "tts_bridge",      name: "TTS 桥接",    status: "warn",    detail: "上游延迟 2.4s（阈值 2s）" },
+      { id: "obsidian_sync",   name: "Obsidian 同步", status: "stopped", detail: "每日 00:10 快照任务未运行" },
+    ],
+    recent_errors: [
+      { ts: "2026-10-25T09:58:12+08:00", source: "programs/napcat",     message: "risk-control ping 812ms (threshold 800ms)" },
+      { ts: "2026-10-25T08:12:44+08:00", source: "tts/synthesize",     message: "upstream timeout，重试 1/2 后成功" },
+      { ts: "2026-10-24T22:00:03+08:00", source: "plugins/mood_report", message: "frequency shaping 推迟冒泡（social.battery=12）" },
+    ],
+    config_fingerprint: {
+      has_deepseek_api_key: true,
+      has_tts_api_key: true,
+      has_onebot_access_token: true,
+      has_snowluma_shared_secret: true,
+      has_smtp_password: false,
+    },
+  },
 
   /* ---------- TTS：模型列表（依据接口地址 GET /models 的演示返回） ---------- */
   ttsModels: [

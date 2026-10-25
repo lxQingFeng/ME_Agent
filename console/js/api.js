@@ -34,6 +34,7 @@ const API = {
     ttsVoices:       "/api/v1/tts/voices",             // POST {endpoint,key,model} → 官方音色列表
     ttsSynthesize:   "/api/v1/tts/synthesize",         // POST {text,voice} → {audio_url}
     ttsCloneUpload:  "/api/v1/tts/clone/audio",        // POST multipart 克隆音频上传
+    diagnosticsExport: "/api/v1/diagnostics/export",   // GET  脱敏诊断包（密钥一律 hasXxx 布尔指纹，无原文）
   },
 
   /* ---------- 基础设施 ---------- */
@@ -130,9 +131,21 @@ const API = {
       } else if (action === "install") {
         p.status = "running"; p.version = p.latest;
         p.proc = { pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: 150, cpu: "1.5%", uptime: "刚刚", restarts: 0 };
+      } else if (action === "one-click") {
+        // 一键接入（可选增强）：下载安装 + 配置 + 启动一次完成
+        p.status = "running"; p.version = p.latest;
+        p.proc = { pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: 120, cpu: "1.2%", uptime: "刚刚", restarts: 0 };
       }
       return { ok: true, id, action, status: p.status };
     }, 900);
+  },
+
+  /* ================= 诊断导出（脱敏） ================= */
+  /* 诊断包 JSON：generated_at / uptime / 组件健康 / 近期错误摘要 / 配置密钥指纹。
+     密钥一律为 hasXxx:true 布尔指纹形态；live 由后端按 SECRET_KEY_PATTERN 脱敏后返回。 */
+  exportDiagnostics() {
+    if (this.mode === "live") return this._fetch(this.LIVE_ROUTES.diagnosticsExport);
+    return this._mockify(() => JSON.parse(JSON.stringify(MOCK.diagnostics)), 600);
   },
 
   /* ================= TTS ================= */
