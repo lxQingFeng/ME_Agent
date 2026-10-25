@@ -6,7 +6,8 @@ import time
 import random
 
 class DialoguePipeline:
-    def __init__(self, settings, engine, llm, memory, plugins, outbound, store, renderer, bus):
+    def __init__(self, settings, engine, llm, memory, plugins, outbound, store, renderer, bus,
+                 tts=None):
         self.settings = settings
         self.engine = engine
         self.llm = llm
@@ -16,6 +17,7 @@ class DialoguePipeline:
         self.store = store
         self.renderer = renderer
         self.bus = bus
+        self.tts = tts          # TTSService(总装注入; speak 工具用)
 
     async def handle(self, env: dict, attend: dict | None = None) -> None:
         chat_id = env["chat_id"]
@@ -61,7 +63,7 @@ class DialoguePipeline:
         messages.append({"role": "user", "content": ctx.user_message(env)})
         reply = ""
         if self.llm is not None and self.llm.enabled:
-            tools = self.plugins.manifests() if self.plugins else None
+            tools = self.plugins.tools() if self.plugins else None
             res = await self.llm.chat(messages, tools=tools)
             reply = (res.get("content") or "").strip()
             rounds = 0
@@ -95,7 +97,7 @@ class DialoguePipeline:
         if name == "speak":
             # TTS 桥接(语音消息), 无插件系统时也可用
             from app.tts.bridge import speak_tool_invoke
-            return await speak_tool_invoke(self.settings, args, context)
+            return await speak_tool_invoke(self.tts, self.outbound, args, context)
         try:
             result = await self.plugins.invoke(name, args, context)
             return str(result)[:400]

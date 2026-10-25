@@ -41,7 +41,7 @@ class ProgramManager:
         self.memory = memory            # MemoryService(一键建 bank)
         self.obsidian = obsidian        # ObsidianChannel(internal 形态启停)
         self.gateway = gateway          # OneBotGateway(ws_event 健康探测)
-        self.defs: list[dict] = list(settings.programs or [])
+        self.defs: list[dict] = list((settings.programs_cfg or {}).get('programs') or [])
         self._def_by_id = {d["id"]: d for d in self.defs}
         self.root: Path = settings.state_dir / "programs"
         self.opt_dir = self.root / "opt"
@@ -520,6 +520,15 @@ class ProgramManager:
             await asyncio.sleep(10)
 
     # ---------- internal 形态 ----------
+    async def autostart(self) -> dict:
+        """进程启动时恢复: internal 形态且持久化状态为 running 的程序(如 obsidian_sync)。"""
+        out = {}
+        for d in self.defs:
+            pid = d["id"]
+            if d.get("kind") == "internal" and self._st(pid).get("status") == "running":
+                out[pid] = self._internal_start(pid)
+        return out
+
     def _internal_start(self, pid: str) -> dict:
         if pid == "obsidian_sync" and self.obsidian is not None:
             if pid in self._internal_tasks and not self._internal_tasks[pid].done():

@@ -77,7 +77,7 @@ class PluginRegistry:
         return True
 
     # ---- LLM 工具清单 ----
-    def manifests(self) -> list[dict] | None:
+    def tools(self) -> list[dict] | None:
         tools = []
         for name, m in self.manifests.items():
             if not self.enabled.get(name, False) or not m.tool:

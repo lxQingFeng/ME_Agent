@@ -76,6 +76,19 @@ class Store:
         )
         return [dict(r) for r in rows]
 
+    def last_message(self, chat_id: str) -> dict | None:
+        rows = self.query("SELECT * FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT 1", (chat_id,))
+        return dict(rows[0]) if rows else None
+
+    def chat_stats_1h(self, chat_id: str, now: float | None = None) -> dict:
+        now = now if now is not None else time.time()
+        rows = self.query("SELECT role, origin, importance FROM messages WHERE chat_id=? AND ts>?",
+                          (chat_id, now - 3600))
+        msgs = len(rows)
+        agent = sum(1 for r in rows if r["role"] == "assistant")
+        return {"msgs_1h": msgs, "agent_replies": agent,
+                "p0": 0, "p1": 0, "burst": 0}
+
     def mark_retained(self, chat_id: str, upto_id: int) -> None:
         self.exec("UPDATE messages SET retained=1 WHERE chat_id=? AND id<=?", (chat_id, upto_id))
 
