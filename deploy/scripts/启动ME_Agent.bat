@@ -35,9 +35,12 @@ if not exist "%VENV_PY%" (
 rem ---- [2/2] key dependency import check ----------------------------
 rem NOTE: python_multipart is the import name of the pip package
 rem "python-multipart" (required by FastAPI form/file upload routes).
-"%VENV_PY%" -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic, python_multipart" 2>nul
+rem NOTE: tzdata is the IANA tz database for the zoneinfo module.
+rem Windows has no system tz database, so zoneinfo("Asia/Shanghai")
+rem needs the tzdata package (Linux/macOS ship one in the OS).
+"%VENV_PY%" -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic, python_multipart, tzdata; from zoneinfo import ZoneInfo; ZoneInfo('Asia/Shanghai')" 2>nul
 if errorlevel 1 (
-  echo [ME_Agent] ERROR: key dependencies missing ^(fastapi/uvicorn/httpx/yaml/websockets/pydantic/python-multipart^).
+  echo [ME_Agent] ERROR: key dependencies missing ^(fastapi/uvicorn/httpx/yaml/websockets/pydantic/python-multipart/tzdata^).
   echo.
   echo Fix guidance ^(run in this folder^):
   echo   .venv\Scripts\pip.exe install -r %REQ%

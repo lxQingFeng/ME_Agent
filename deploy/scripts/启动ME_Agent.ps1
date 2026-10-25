@@ -50,9 +50,11 @@ if (-not (Test-Path $VenvPy)) {
 
 # ---- [2/2] 关键依赖导入检查 ----
 # NOTE: python_multipart 是 pip 包 python-multipart 的导入名(FastAPI 表单/文件上传路由必需)。
-& $VenvPy -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic, python_multipart" 2>$null
+# NOTE: tzdata 为 zoneinfo 提供 IANA 时区库(Windows 无系统时区库, Linux/macOS 系统自带);
+#       后面的 ZoneInfo('Asia/Shanghai') 即 37 实机崩溃点的功能性探测。
+& $VenvPy -c "import fastapi, uvicorn, httpx, yaml, websockets, pydantic, python_multipart, tzdata; from zoneinfo import ZoneInfo; ZoneInfo('Asia/Shanghai')" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    Fail "关键依赖缺失(fastapi/uvicorn/httpx/yaml/websockets/pydantic/python-multipart)" @(
+    Fail "关键依赖缺失(fastapi/uvicorn/httpx/yaml/websockets/pydantic/python-multipart/tzdata)" @(
         '.venv\Scripts\pip.exe install -r requirements.txt'
     )
 }

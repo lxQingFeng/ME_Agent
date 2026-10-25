@@ -3,5 +3,6 @@ httpx>=0.28
 python-multipart>=0.0.20  # FastAPI form/file upload (tts clone audio endpoint)
 pydantic>=2.12
 PyYAML>=6.0
+tzdata>=2024.1         # IANA tz database for zoneinfo (Windows has no system tz db; harmless on Linux)
 uvicorn>=0.35        # python -m app service process
 websockets>=14       # OneBot reverse WS + /api/ws push (client test scripts also use it)
