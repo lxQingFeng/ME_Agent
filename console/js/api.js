@@ -25,9 +25,11 @@ const API = {
     sendMessage:     "/api/v1/chat/conversations/{id}/send",     // POST 测试发送（管理口）
     plugins:         "/api/v1/plugins",                // GET  插件列表
     pluginToggle:    "/api/v1/plugins/{id}/enabled",   // PUT  {enabled:bool}
-    programs:        "/api/v1/programs",               // GET  第三方程序状态
-    programAction:   "/api/v1/programs/{id}/{action}", // POST start|stop|restart|update|install
+    programs:        "/api/v1/programs",               // GET  第三方程序状态（obsidian_sync 条目 health 含同步可观测数据）
+    programAction:   "/api/v1/programs/{id}/{action}", // POST 统一动作 → {ok, id, action, result}
     programLogs:     "/api/v1/programs/{id}/logs",     // GET  进程日志尾部
+    programCheckLatest: "/api/v1/programs/{id}/check-latest", // GET 检查更新（actions 数组内 "check-update" 按钮调它）
+    obsidianSyncNow: "/api/v1/programs/obsidian_sync/sync",   // POST Obsidian 立即同步 → {ok, id, action, result}
     ttsConfigGet:    "/api/v1/tts/config",             // GET  当前 TTS 配置（密钥脱敏）
     ttsConfigSave:   "/api/v1/tts/config",             // PUT  保存（头/体原文落盘）
     ttsModels:       "/api/v1/tts/models",             // POST {endpoint,key} → 代理拉取模型列表
@@ -55,6 +57,22 @@ const API = {
   _mockify(fn, delay = 260) {
     // mock 统一注入小延迟，让加载态真实可感；立即执行并返回 Promise
     return U.sleep(delay + Math.random() * 240).then(() => Promise.resolve(typeof fn === "function" ? fn() : fn));
+  },
+  /* 动作类接口专用（V4）：业务失败（ok:false + error{code,message,hint}）也 resolve，
+     仅网络/超时/非 JSON 才 reject —— 保证后端修复指引文案（hint）能完整回流到页面。 */
+  async _fetchResult(route, options = {}) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.timeout);
+    try {
+      const res = await fetch(this.baseUrl + route, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+        signal: ctrl.signal,
+      });
+      const body = await res.json().catch(() => null);
+      if (body) return body;
+      throw new Error(`HTTP ${res.status}（响应非 JSON）`);
+    } finally { clearTimeout(timer); }
   },
   setMode(mode) {
     this.mode = mode === "live" ? "live" : "mock";
@@ -106,38 +124,127 @@ const API = {
     return this._mockify(() => ({ ok: true, id, enabled }));
   },
 
-  /* ================= 第三方程序 ================= */
+  /* ================= 第三方程序（V4 · 契约已定稿） =================
+     统一动作响应：POST /api/v1/programs/{id}/{action} → {ok, id, action, result}
+       成功 → result = {status, version, detail…}（detail = 人话结果描述）
+       失败 → result = {code?, error, hint}（扁平字段：error 失败原因 / hint 修复指引）
+     busy 语义：动作执行中该程序条目 status="busy" + busy_action —— 前端轮询
+     GET /api/v1/programs 即可看到；完成后后端写终态并经 WS 推送
+     （topics：program.status / obsidian.sync，前端桥接为 document 事件）。 */
   getPrograms() {
     if (this.mode === "live") return this._fetch(this.LIVE_ROUTES.programs);
     return this._mockify(() => JSON.parse(JSON.stringify(MOCK.programs)));
   },
   programAction(id, action) {
     if (this.mode === "live") {
-      return this._fetch(this.LIVE_ROUTES.programAction.replace("{id}", id).replace("{action}", action), { method: "POST" });
+      return this._fetchResult(this.LIVE_ROUTES.programAction.replace("{id}", id).replace("{action}", action), { method: "POST" });
     }
-    // mock：本地演化状态，让操作可感
+    // mock：动作开始同步置 busy（status="busy" + busy_action，轮询 /programs 可见），
+    // 完成演化终态；一次性故障演练演示 ok:false + result{code,error,hint} 契约
+    const p = MOCK.programs.find(x => x.id === id);
+    if (!p) return this._mockify(() => { throw new Error("程序不存在"); }, 200);
+    const prevStatus = p.status;
+    p.status = "busy";
+    p.busy_action = action;
+    return this._mockify(() => {
+      const drill = MOCK.drillFailures && MOCK.drillFailures[id + ":" + action];
+      if (drill) {
+        delete MOCK.drillFailures[id + ":" + action];
+        p.status = prevStatus; p.busy_action = null; // 可修复失败：状态回滚
+        return { ok: false, id, action, result: drill };
+      }
+
+      const ver = p.upstream || p.latest || p.version;
+      const freshProc = (mem) => ({ pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: mem, cpu: (0.8 + Math.random() * 2.4).toFixed(1) + "%", uptime: "刚刚", restarts: p.proc ? p.proc.restarts : 0 });
+      let detail = "";
+      if (action === "install") {
+        p.status = "running"; p.version = ver; p.latest = ver; p.proc = freshProc(p.form === "docker" ? 420 : 170);
+        detail = p.form === "docker"
+          ? `docker compose up -d 完成：容器 ${p.container} 已启动（镜像 ${p.image}:${ver}）`
+          : `release v${ver} 下载并解压完成，已写入运行目录 ${p.dir || "~/.me-agent/programs/"} 并启动`;
+      } else if (action === "one-click") {
+        p.status = "running"; p.version = ver; p.latest = ver; p.proc = freshProc(p.form === "docker" ? 420 : 170);
+        detail = `拉取 → 配置 → 启动 → 注册完成：${p.name} 已接入 Console（健康探测与事件通道已建立，v${ver}）`;
+      } else if (action === "update") {
+        p.version = ver; p.latest = ver; p.status = "running";
+        detail = p.form === "docker"
+          ? `已拉取 ${p.image}:${ver} 并重建容器，vault 挂载已恢复`
+          : `已更新到 v${ver}（下载 → 替换 → 平滑重启，反向 WS 已重连）`;
+      } else if (action === "start" || action === "restart") {
+        p.status = "running";
+        p.proc = freshProc(120 + Math.floor(Math.random() * 300));
+        if (action === "restart" && p.proc) p.proc.restarts = (p.proc.restarts || 0) + 1;
+        detail = action === "start" ? `进程已启动（pid ${p.proc.pid}）` : `已重启（第 ${p.proc.restarts} 次）`;
+      } else if (action === "stop") {
+        p.status = "stopped";
+        p.proc = { pid: null, mem_mb: 0, cpu: "—", uptime: "—", restarts: p.proc ? p.proc.restarts : 0 };
+        detail = p.form === "docker" ? `容器 ${p.container} 已停止` : "进程已停止";
+      }
+      p.busy_action = null;
+      return { ok: true, id, action, result: { status: p.status, version: p.version, detail } };
+    }, action === "install" || action === "one-click" ? 1500 : (action === "update" ? 1300 : 850));
+  },
+  /* 检查更新（契约定稿）：GET /api/v1/programs/{id}/check-latest
+     —— 按钮名 "check-update" 来自后端 actions 数组，点击时前端调 check-latest。
+     响应 {ok, id, action, result:{current, latest, has_update, notes, checked_at}}；
+     发现新版后端同步刷新 GET /programs 的 latest 字段（卡片徽标点亮、更新按钮解锁）。 */
+  programCheckLatest(id) {
+    if (this.mode === "live") {
+      return this._fetchResult(this.LIVE_ROUTES.programCheckLatest.replace("{id}", id), { method: "GET" });
+    }
     return this._mockify(() => {
       const p = MOCK.programs.find(x => x.id === id);
       if (!p) throw new Error("程序不存在");
-      if (action === "start" || action === "restart") {
-        p.status = "running";
-        p.proc = { pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: 120 + Math.floor(Math.random() * 300), cpu: "2.1%", uptime: "刚刚", restarts: p.proc.restarts + (action === "restart" ? 1 : 0) };
-      } else if (action === "stop") {
-        p.status = "stopped";
-        p.proc = { pid: null, mem_mb: 0, cpu: "—", uptime: "—", restarts: p.proc.restarts };
-      } else if (action === "update") {
-        p.version = p.latest;
-        p.status = "running";
-      } else if (action === "install") {
-        p.status = "running"; p.version = p.latest;
-        p.proc = { pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: 150, cpu: "1.5%", uptime: "刚刚", restarts: 0 };
-      } else if (action === "one-click") {
-        // 一键接入（可选增强）：下载安装 + 配置 + 启动一次完成
-        p.status = "running"; p.version = p.latest;
-        p.proc = { pid: 1000 + Math.floor(Math.random() * 4000), mem_mb: 120, cpu: "1.2%", uptime: "刚刚", restarts: 0 };
-      }
-      return { ok: true, id, action, status: p.status };
-    }, 900);
+      if (p.upstream && p.upstream !== p.latest) p.latest = p.upstream; // 模拟后端查询上游发现新版本
+      const has = p.latest !== p.version;
+      return {
+        ok: true, id, action: "check-update",
+        result: {
+          current: p.version, latest: p.latest, has_update: has,
+          checked_at: new Date().toISOString(),
+          notes: has ? `上游已发布 v${p.latest}（当前 v${p.version}）` : "上游无新版本，已是最新",
+        },
+      };
+    }, 700);
+  },
+
+  /* ================= Obsidian 同步器（V4 · 契约已定稿） =================
+     可观测面板数据源 = GET /api/v1/programs 中 obsidian_sync 条目的 health 字段：
+       {running, last_sync_at, last_result{changed, pushed, error}, error_streak, detail}
+     （不再调用独立 sync 状态接口；Mock 在 health 上附加演示增强字段，面板自动降级）
+     WS 实时推送 topic = obsidian.sync（前端桥接为 document 事件 obssync:push）。 */
+  /* 立即同步：POST /api/v1/programs/obsidian_sync/sync → {ok, id, action, result}；
+     成功 result = {changed, pushed, commits, duration_ms, at…}，失败 result = {code?, error, hint} */
+  obsidianSyncNow() {
+    if (this.mode === "live") return this._fetchResult(this.LIVE_ROUTES.obsidianSyncNow, { method: "POST" });
+    const entry = MOCK.programs.find(x => x.id === "obsidian_sync");
+    if (!entry || !entry.health) return this._mockify(() => { throw new Error("同步器状态不可用"); }, 200);
+    const prevStatus = entry.status;
+    entry.status = "busy"; entry.busy_action = "sync";   // busy 期间轮询 /programs 可见
+    return this._mockify(() => {
+      const s = entry.health;
+      const changed = 2 + Math.floor(Math.random() * 5);
+      const rec = {
+        at: new Date().toISOString(), outcome: "success", trigger: "manual",
+        changed_files: changed, pushed_files: changed, commits: 1,
+        commit: Math.random().toString(16).slice(2, 9),
+        duration_ms: 1600 + Math.floor(Math.random() * 1400),
+      };
+      entry.status = "running"; entry.busy_action = null;
+      s.last_sync_at = rec.at;
+      s.last_result = { changed: rec.changed_files, pushed: rec.pushed_files, error: null };
+      s.error_streak = 0;
+      s.detail = `手动同步成功 · 注入 ${rec.changed_files} · 推送 ${rec.pushed_files} 文件`;
+      s.last_sync = rec;
+      s.history.unshift(rec);
+      if (s.history.length > 6) s.history.length = 6;
+      s.projection.files += 1;
+      s.projection.latest_file_age_min = 0;
+      s.vault.synced_entries = Math.min(s.vault.knowledge_files, s.vault.synced_entries + changed);
+      s.vault.last_commit = rec.commit;
+      s.ws.last_push = rec.at;
+      return { ok: true, id: "obsidian_sync", action: "sync", result: rec };
+    }, 1900);
   },
 
   /* ================= 诊断导出（脱敏） ================= */

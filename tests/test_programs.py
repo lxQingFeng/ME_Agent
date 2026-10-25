@@ -332,6 +332,8 @@ def test_obsidian_observability() -> None:
               h.get("status") in ("running", "stopped") and "上次同步" in str(h.get("detail"))
               and "失败" in str(h.get("detail")),
               str(h.get("detail"))[:160])
+        check("C11b _health internal 含 running 字段(契约定稿)",
+              isinstance(h.get("running"), bool), str(h.get("running")))
         await m.close()
 
         # stop_loop → running False

@@ -136,6 +136,7 @@ a:hover { text-decoration: underline; }
 .svc-dot[data-state="warn"] { background: var(--amber); box-shadow: 0 0 7px rgba(245,165,36,.7); }
 .svc-dot[data-state="err"] { background: var(--red); box-shadow: 0 0 7px rgba(240,80,92,.7); }
 .svc-dot[data-state="mock"] { background: var(--purple); box-shadow: 0 0 7px rgba(167,139,250,.7); }
+.svc-dot[data-state="busy"] { background: var(--blue); box-shadow: 0 0 7px rgba(56,189,248,.7); animation: coreBeat 1.6s ease-in-out infinite; }
 .topbar-clock { font-family: var(--font-mono); font-size: var(--fs-md); color: var(--text-dim); margin-left: 4px; }
 
 /* ============================================================
@@ -707,3 +708,114 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 
 /* 加载图标旋转（修复既有 .spin 类缺动画） */
 .i.spin { animation: spin .7s linear infinite; }
+
+/* ============================================================
+   V4 · 程序页一键管理回归 + Obsidian 同步可观测
+   ============================================================ */
+
+/* -- 程序卡（补齐结构样式；--logo-c 为各卡 logo 色） -- */
+.program-card { display: flex; flex-direction: column; gap: 12px; }
+.prog-head { display: flex; align-items: flex-start; gap: 12px; }
+.prog-head .prog-title { min-width: 0; flex: 1; }
+.prog-title .card-title { flex-wrap: wrap; row-gap: 4px; }
+.program-logo {
+  width: 44px; height: 44px; border-radius: var(--r-md); flex-shrink: 0;
+  display: grid; place-items: center; font-weight: 800; font-size: 17px; color: #04121B;
+  background: var(--logo-c, var(--blue));
+}
+.svc-tag { display: inline-flex; align-items: center; gap: 7px; margin-top: 6px; font-size: var(--fs-xs); color: var(--text-dim); flex-wrap: wrap; }
+.svc-tag .svc-dot { width: 8px; height: 8px; }
+.form-badge { font-size: 10px !important; padding: 1px 7px !important; margin-left: 4px; }
+.pmeta { display: flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-faint); line-height: 1.6; flex-wrap: wrap; }
+.pmeta .i { width: 13px; height: 13px; flex-shrink: 0; }
+.pmeta b { color: var(--text-dim); font-weight: 500; }
+.ver-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--text-faint); flex-wrap: wrap; }
+.ver-row .i { width: 13px; height: 13px; }
+.ver-row .ver-v { color: var(--text); font-weight: 600; }
+.ver-row .ver-latest { color: var(--text-faint); }
+.proc-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 14px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: rgba(15, 24, 48, .45);
+}
+.proc-grid.dimmed { opacity: .55; }
+.proc-grid .proc-k { font-size: 10.5px; color: var(--text-faint); display: block; letter-spacing: .04em; }
+.proc-grid .proc-v { font-size: 12.5px; color: var(--text-dim); display: block; margin-top: 2px; }
+.program-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.prog-log { margin-top: 2px; }
+.code-block {
+  background: rgba(9, 14, 28, .85); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 12px 14px; font-size: 12px; line-height: 1.65; color: var(--text-dim);
+  overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all;
+}
+
+/* -- 动作反馈：busy / 成功 / 失败+hint / 检查更新 -- */
+.afb { display: flex; gap: 10px; align-items: flex-start; padding: 10px 13px; border-radius: var(--r-md); font-size: var(--fs-sm); line-height: 1.6; border: 1px solid; }
+.afb .i { width: 15px; height: 15px; flex-shrink: 0; margin-top: 2px; }
+.afb .bn-body { color: var(--text-dim); min-width: 0; }
+.afb b { color: var(--text); }
+.afb-detail { margin-top: 2px; }
+.afb-busy { background: var(--blue-soft); border-color: rgba(56, 189, 248, .3); color: var(--blue); }
+.afb-ok { background: var(--accent-soft); border-color: rgba(34, 197, 94, .3); color: var(--accent); }
+.afb-err { background: var(--red-soft); border-color: rgba(240, 80, 92, .35); color: var(--red); }
+.afb-hint {
+  margin-top: 7px; padding: 7px 10px; border-radius: var(--r-sm);
+  background: rgba(11, 17, 32, .5); border: 1px dashed rgba(240, 80, 92, .35); color: var(--text-dim);
+}
+.afb-hint .hint-k {
+  display: inline-block; margin-right: 8px; font-size: 10px; color: var(--amber);
+  border: 1px solid rgba(245, 165, 36, .4); padding: 0 6px; border-radius: 999px;
+}
+.upd-check { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--text-dim); padding: 8px 12px; border: 1px dashed var(--border); border-radius: var(--r-sm); }
+.upd-check .i { width: 13px; height: 13px; color: var(--text-faint); }
+.upd-at { color: var(--text-faint); margin-left: auto; }
+
+/* -- Obsidian 同步器可观测面板 -- */
+.obs-wrap { grid-column: 1 / -1; margin-top: 6px; }
+.obs-panel { display: flex; flex-direction: column; gap: 12px; }
+.obs-detail { display: flex; align-items: center; gap: 7px; font-size: var(--fs-xs); color: var(--text-dim); padding: 7px 11px; border: 1px dashed var(--border); border-radius: var(--r-sm); }
+.obs-detail .i { width: 13px; height: 13px; color: var(--accent); flex-shrink: 0; }
+.obs-actions { flex-shrink: 0; margin-left: auto; }
+.ws-badge { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; font-size: var(--fs-xs); color: var(--text-dim); }
+.ws-badge .ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.ws-badge[data-on="true"] { color: var(--accent); }
+.ws-badge[data-on="true"] .ws-dot { background: var(--accent); box-shadow: 0 0 7px rgba(34, 197, 94, .7); animation: coreBeat 1.6s ease-in-out infinite; }
+.obs-stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+.obs-stat { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: rgba(15, 24, 48, .45); min-width: 0; }
+.obs-stat .os-k { font-size: 10.5px; color: var(--text-faint); letter-spacing: .04em; display: block; }
+.obs-stat .os-v { font-size: 15px; font-weight: 700; font-family: var(--font-mono); margin-top: 3px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.obs-stat .os-v .os-u { font-style: normal; font-size: 10.5px; font-weight: 400; color: var(--text-faint); margin-left: 3px; }
+.obs-stat .os-h { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.obs-block { padding: 11px 14px; border-radius: var(--r-md); border: 1px solid; }
+.obs-block.ok { background: var(--accent-soft); border-color: rgba(34, 197, 94, .3); }
+.obs-block.bad { background: var(--red-soft); border-color: rgba(240, 80, 92, .35); }
+.obs-block-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); flex-wrap: wrap; }
+.obs-block-head .i { width: 15px; height: 15px; }
+.obs-block.ok .obs-block-head { color: var(--accent); }
+.obs-block.bad .obs-block-head { color: var(--red); }
+.obs-block-head .mono { color: var(--text-faint); font-size: var(--fs-xs); margin-left: auto; }
+.obs-block-body { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-dim); line-height: 1.6; }
+.obs-block-body b { color: var(--text); font-family: var(--font-mono); }
+.obs-sec { font-size: 11px; color: var(--text-faint); letter-spacing: .06em; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.obs-sec .i { width: 13px; height: 13px; }
+.obs-hist { display: flex; flex-direction: column; gap: 2px; }
+.obs-h-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm); font-size: var(--fs-xs); color: var(--text-dim); }
+.obs-h-row:hover { background: var(--card-2); }
+.obs-h-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--accent); }
+.obs-h-row.bad .obs-h-dot { background: var(--red); }
+.obs-h-row.bad .obs-h-summary { color: var(--red); }
+.obs-h-at { color: var(--text-faint); flex-shrink: 0; }
+.obs-h-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obs-h-row .chip { margin-left: auto; flex-shrink: 0; }
+.obs-flash { animation: obsFlash 1.2s ease-out; }
+@keyframes obsFlash {
+  0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, .55); border-color: var(--accent); }
+  100% { box-shadow: 0 0 0 14px rgba(34, 197, 94, 0); }
+}
+
+@media (max-width: 1160px) { .obs-stats { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 640px) {
+  .obs-stats { grid-template-columns: repeat(2, 1fr); }
+  .proc-grid { grid-template-columns: repeat(2, 1fr); }
+  .obs-actions { margin-left: 0; }
+}

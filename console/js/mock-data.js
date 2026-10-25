@@ -147,14 +147,18 @@ const MOCK = {
     },
   ],
 
-  /* ---------- 第三方程序 ---------- */
+  /* ---------- 第三方程序（V4：一键管理回归） ----------
+     form 字段决定一键形态："docker" = docker compose 一键拉取/启停/更新；
+     "release" = 从 GitHub Release 拉取安装/更新；缺省 = 外部自管（仅健康探测）。
+     upstream = 后端「检查更新」才能发现的最新版本（发现后写入 latest 并点亮徽标）。 */
   programs: [
     {
-      id: "snowluma", name: "SnowLuma", tag: "通道层底座",
+      id: "snowluma", name: "SnowLuma", tag: "通道层底座", form: "release",
       desc: "SnowLuma + OneBot 组合承载 QQ 消息通道，反向 WS 接入，事件总线分发。",
-      status: "running", version: "0.7.2", latest: "0.7.2",
+      status: "running", version: "0.7.2", latest: "0.7.2", upstream: "0.7.3",
+      source: "github.com/SnowLuma/SnowLuma/releases", dir: "~/.me-agent/programs/snowluma",
       proc: { pid: 1024, mem_mb: 186, cpu: "3.2%", uptime: "2天14小时", restarts: 1 },
-      actions: ["update", "stop", "log"],
+      actions: ["install", "start", "stop", "update", "one-click", "check-update", "log"],
       color: "var(--blue)",
       logo: "SL", logs: [
         "[10:02:11] onebot:reverse-ws connected (NapCat 4.8.1)",
@@ -163,11 +167,12 @@ const MOCK = {
       ],
     },
     {
-      id: "hindsight", name: "Hindsight", tag: "记忆系统",
+      id: "hindsight", name: "Hindsight", tag: "记忆系统", form: "docker",
       desc: "情景记忆抽取+Observations 固化，与 Obsidian vault 单向同步（vault 只读审计）。",
-      status: "running", version: "1.4.0", latest: "1.4.0",
+      status: "running", version: "1.4.0", latest: "1.4.0", upstream: "1.4.1",
+      image: "ghcr.io/me-agent/hindsight", container: "hindsight",
       proc: { pid: 1288, mem_mb: 412, cpu: "1.8%", uptime: "2天14小时", restarts: 0 },
-      actions: ["update", "stop", "log"],
+      actions: ["install", "start", "stop", "update", "one-click", "check-update", "log"],
       color: "var(--purple)",
       logo: "H", logs: [
         "[09:41:02] retain: 3 events accepted (tick delta filter)",
@@ -176,20 +181,63 @@ const MOCK = {
       ],
     },
     {
-      id: "obsidian_sync", name: "Obsidian 同步器", tag: "人类可审计",
-      desc: "每日 00:10 导出 WorldState 快照 + 记忆 vault git commit，人类可直接翻阅 Agent 大脑。",
-      status: "stopped", version: "1.0.1", latest: "1.0.2",
-      proc: { pid: null, mem_mb: 0, cpu: "—", uptime: "—", restarts: 0 },
-      actions: ["one-click", "update", "start", "log"],
+      /* 程序列表保留 obsidian_sync 条目；页面将其渲染为「Obsidian 同步器 · 可观测面板」，
+         数据源 = 本条目的 health 字段（V4 契约已定稿：/programs 内 obsidian_sync.health） */
+      id: "obsidian_sync", name: "Obsidian 同步器", tag: "人类可审计", form: "sync",
+      desc: "每日 00:10 全量快照 + 事件触发增量：vault git commit 推送远端，人类可随时翻阅 Agent 大脑。",
+      status: "running", version: "1.0.1", latest: "1.0.1", upstream: "1.0.2",
+      proc: { pid: 1104, mem_mb: 38, cpu: "0.3%", uptime: "2天14小时", restarts: 0 },
+      actions: ["sync-now", "update", "start", "log"],
       color: "var(--cyan)",
-      logo: "Ob", logs: ["[昨日 00:10] snapshot: state/snapshots/2026-10-24.yaml committed (3.1 KB)"],
+      logo: "Ob", logs: [
+        "[00:10:03] snapshot: state/snapshots/2026-10-25.yaml committed (3.4 KB)",
+        "[00:10:04] projection: 12 files changed → git push origin main (a1b2c3d)",
+      ],
+      /* 契约核心：running / last_sync_at / last_result{changed,pushed,error} / error_streak / detail；
+         schedule / next_run / last_sync(富记录) / history / projection / vault / ws 为 Mock 演示
+         增强字段 —— live 无这些字段时面板自动降级，不影响核心可观测。 */
+      health: {
+        running: true,
+        last_sync_at: "2026-10-25T00:10:03+08:00",
+        last_result: { changed: 12, pushed: 12, error: null },
+        error_streak: 0,
+        detail: "定时任务运行中 · 最近成功 00:10（注入 12 · 推送 12 文件）",
+        /* ---- 演示增强（live 可缺省） ---- */
+        schedule: "每日 00:10 全量快照 · retain 事件后 +5min 增量",
+        next_run: "明日 00:10",
+        last_sync: {
+          at: "2026-10-25T00:10:03+08:00", outcome: "success", trigger: "cron",
+          changed_files: 12, pushed_files: 12, commits: 1,
+          commit: "a1b2c3d", duration_ms: 4210,
+        },
+        history: [
+          { at: "2026-10-25T00:10:03+08:00", outcome: "success", trigger: "cron",
+            changed_files: 12, pushed_files: 12, commits: 1, commit: "a1b2c3d", duration_ms: 4210 },
+          { at: "2026-10-24T00:10:02+08:00", outcome: "failure", trigger: "cron",
+            stage: "vault git push", code: "GIT_AUTH_FAILED",
+            changed_files: 9, pushed_files: 0, commits: 0, duration_ms: 980,
+            error: "fatal: Authentication failed for 'https://github.com/37/me-agent-vault.git'",
+            hint: "检查 vault 远端凭据（gh auth status / 更新 PAT），或临时切换 SSH 远端后点「立即同步」重试。" },
+          { at: "2026-10-23T00:10:05+08:00", outcome: "success", trigger: "cron",
+            changed_files: 7, pushed_files: 7, commits: 1, commit: "9f8e7d6", duration_ms: 3980 },
+        ],
+        projection: {
+          mounted: true, path: "~/ME_Agent/vault-projection",
+          files: 128, latest_file_age_min: 36,
+        },
+        vault: {
+          knowledge_files: 462, synced_entries: 397,
+          last_commit: "a1b2c3d", remote: "github.com/37/me-agent-vault",
+        },
+        ws: { connected: true, channel: "obsidian.sync", last_push: "2026-10-25T00:10:04+08:00" },
+      },
     },
     {
       id: "mimo_tts", name: "MiMo TTS 服务", tag: "语音合成",
       desc: "小米 MiMo completionsts 接口代理（内置去重/重试），为 Agent 语音消息提供合成。",
       status: "running", version: "0.3.1", latest: "0.3.1",
       proc: { pid: 1566, mem_mb: 96, cpu: "0.9%", uptime: "8小时", restarts: 2 },
-      actions: ["update", "stop", "log"],
+      actions: ["start", "update", "stop", "log"],
       color: "var(--pink)",
       logo: "T", logs: [
         "[09:12:30] synthesize: voice=沁瑶 len=42chars dur=1.8s cache=miss",
@@ -211,6 +259,28 @@ const MOCK = {
     },
   ],
 
+  /* ---------- 一键动作故障演练（一次性，触发后自动清除） ----------
+     用途：演示后端统一动作失败契约 {ok:false, id, action, result:{code, error, hint}}
+     —— error 为失败原因、hint 为修复指引文案（扁平字段），前端红条展示。
+     首次触发，重试即成功，与真实可修复故障同构。 */
+  drillFailures: {
+    "hindsight:install": {
+      code: "DOCKER_UNAVAILABLE",
+      error: "Docker 环境不可用：docker info 探测失败（daemon 未响应或未安装）",
+      hint: "先确认 Docker 已安装并运行（systemctl start docker 或打开 Docker Desktop，`docker info` 可用后重试）；一键拉取将执行 docker compose up -d 拉取镜像并启动容器。",
+    },
+    "hindsight:one-click": {
+      code: "DOCKER_UNAVAILABLE",
+      error: "Docker 环境不可用：docker info 探测失败（daemon 未响应或未安装）",
+      hint: "先确认 Docker 已安装并运行（systemctl start docker 或打开 Docker Desktop，`docker info` 可用后重试）；一键接入将依次执行拉取 → 配置 → 启动 → 注册。",
+    },
+    "snowluma:update": {
+      code: "RELEASE_DOWNLOAD_FAILED",
+      error: "下载 release 超时：github.com 连接被重置（3 次重试均失败）",
+      hint: "检查网络或代理（可为 Console 后端配置 HTTPS_PROXY 环境变量）；也可手动下载 release 包放入 ~/.me-agent/downloads/ 缓存目录后重试。",
+    },
+  },
+
   /* ---------- 诊断导出：GET /api/v1/diagnostics/export 的同构演示数据 ----------
      脱敏铁律：所有密钥仅以 hasXxx:true 布尔指纹出现，绝不出现原文。 */
   diagnostics: {
@@ -223,7 +293,7 @@ const MOCK = {
       { id: "onebot_gateway",  name: "OneBot 网关", status: "ok",      detail: "反向 WS 已连接 · NapCat 4.8.1" },
       { id: "memory",          name: "记忆系统",    status: "ok",      detail: "retain / recall 正常 · 最近 recall 10:07" },
       { id: "tts_bridge",      name: "TTS 桥接",    status: "warn",    detail: "上游延迟 2.4s（阈值 2s）" },
-      { id: "obsidian_sync",   name: "Obsidian 同步", status: "stopped", detail: "每日 00:10 快照任务未运行" },
+      { id: "obsidian_sync",   name: "Obsidian 同步", status: "ok",      detail: "定时任务运行中 · 最近成功 00:10（12 文件）" },
     ],
     recent_errors: [
       { ts: "2026-10-25T09:58:12+08:00", source: "programs/napcat",     message: "risk-control ping 812ms (threshold 800ms)" },
@@ -294,6 +364,35 @@ Content-Type: application/json`,
     "晚上好，今天跑完五公里啦，现在在沙发上看《三体III》最后两章，群里明天见～",
     "这道题的答案是四十二，不过更重要的是提问的方式。",
   ],
+};
+
+/* 演示用：模拟一次「事件触发」的增量同步成功（由 WS 推送模拟器调用，对应
+   后端 obsidian.sync topic，驱动可观测面板自动刷新）。同步更新契约核心字段
+   （last_sync_at / last_result / error_streak / detail）与演示增强字段。 */
+MOCK.advanceObsidianSync = function () {
+  const entry = (this.programs || []).find(p => p.id === "obsidian_sync");
+  const s = entry && entry.health;
+  if (!s) return;
+  const now = new Date();
+  const changed = 1 + Math.floor(Math.random() * 3);
+  const rec = {
+    at: now.toISOString(), outcome: "success", trigger: "event",
+    changed_files: changed, pushed_files: changed, commits: 1,
+    commit: Math.random().toString(16).slice(2, 9),
+    duration_ms: 700 + Math.floor(Math.random() * 900),
+  };
+  s.last_sync_at = rec.at;
+  s.last_result = { changed: rec.changed_files, pushed: rec.pushed_files, error: null };
+  s.error_streak = 0;
+  s.detail = `事件触发同步成功 · 注入 ${rec.changed_files} · 推送 ${rec.pushed_files} 文件`;
+  s.last_sync = rec;
+  s.history.unshift(rec);
+  if (s.history.length > 6) s.history.length = 6;
+  s.projection.files += 1;
+  s.projection.latest_file_age_min = 0;
+  s.vault.synced_entries = Math.min(s.vault.knowledge_files, s.vault.synced_entries + changed);
+  s.vault.last_commit = rec.commit;
+  s.ws.last_push = now.toISOString();
 };
 
 window.MOCK = MOCK;

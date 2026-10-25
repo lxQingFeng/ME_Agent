@@ -629,7 +629,8 @@ class ProgramManager:
                 streak = int(s.get("error_streak") or 0)
                 if streak:
                     detail += f"(连续失败 {streak} 次)"
-                return {"type": "internal", "status": "running" if running else "stopped",
+                return {"type": "internal", "running": running,
+                        "status": "running" if running else "stopped",
                         "detail": detail, "last_sync_at": ls,
                         "last_result": lr, "error_streak": streak}
         proc = self._procs.get(pid)

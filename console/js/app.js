@@ -12,11 +12,27 @@ const App = {
 
   registerPage(name, def) { this.pages[name] = def; },
 
+  /* V4 · Obsidian 同步 WS 推送模拟器（Mock 专属）：
+     45s 一拍模拟后端 WS obsidian.sync topic 推送 → document 事件 obssync:push，
+     程序页可观测面板监听后自动刷新（面板数据源 = GET /programs 的 obsidian_sync.health）。
+     live 接入后由 WS 桥接层将后端 topic（program.status → document 事件
+     program:status / obsidian.sync → obssync:push）转换为同名 document 事件，
+     模拟器检测到 live 模式自动让位（不派发）。 */
+  startObsidianSyncSim() {
+    clearInterval(this.obsSyncTimer);
+    this.obsSyncTimer = setInterval(() => {
+      if (API.mode !== "mock" || !MOCK.advanceObsidianSync) return;
+      MOCK.advanceObsidianSync();
+      document.dispatchEvent(new CustomEvent("obssync:push", { detail: { at: new Date().toISOString() } }));
+    }, 45000);
+  },
+
   boot() {
     this.bindNav();
     this.startClock();
     this.restoreModeBadge();
     this.startHeartbeat();
+    this.startObsidianSyncSim();
     window.addEventListener("hashchange", () => this.route());
     this.route();
     console.log("%cQQ Agent Console ready", "color:#22C55E;font-weight:bold");
