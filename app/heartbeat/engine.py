@@ -142,19 +142,28 @@ class HeartbeatEngine:
                     self._emit("engine.wake", {"date": date})
                 continue
             if not anchor.hard and self.state.sleep_state == "asleep":
-                anchors_done.append(anchor.id)   # 软锚点睡过即过, 不叫醒
+                # 软锚点睡过即过, 不叫醒; 补 pass_asleep 事件保证重放可还原
+                self.state.misc.setdefault("anchors_done", {}).setdefault(a_date, []).append(anchor.id)
+                self._log([{"ts": now.isoformat(), "type": "anchor", "kind": "pass_asleep",
+                            "to": anchor.activity, "reason": anchor.id, "meta": {"kind": "pass_asleep"}}], report)
                 continue
             p = TransitionProposal(from_activity=self.state.current.id, to_activity=anchor.activity,
                                    to_location=None, task=anchor.want, intent=anchor.id,
                                    reason="anchor")
             res = self._apply(p, now, report)
             # 无论成败都记录"已尝试", 防止每拍重试刷屏(硬锚点 miss 已在事件里留痕)
-            anchors_done.append(anchor.id)
+            # 注意: _apply 成功时 guard 深拷贝并整体替换 self.state, 必须重新取
+            # anchors_done 引用, 否则写入被替换前的旧对象 → 标记丢失/每拍重试
+            self.state.misc.setdefault("anchors_done", {}).setdefault(a_date, []).append(anchor.id)
             if res and self.schedule.anchor_satisfied(anchor, self.state.current.id, self.state.sleep_state):
                 self._log([{"ts": now.isoformat(), "type": "anchor", "kind": "hit_late",
                             "to": anchor.activity, "reason": anchor.id, "meta": {}}], report)
                 if anchor.id == "wake":
                     self._emit("engine.wake", {"date": date})
+            else:
+                # 尝试未满足(被拒/兜底落到别处): 也留 miss 事件, 重放才能还原
+                self._log([{"ts": now.isoformat(), "type": "anchor", "kind": "miss",
+                            "to": anchor.activity, "reason": anchor.id, "meta": {"kind": "miss"}}], report)
 
         # 锚点记录剪枝(只留最近 3 天)
         try:

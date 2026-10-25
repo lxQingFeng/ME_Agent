@@ -1,17 +1,23 @@
 # Hindsight 记忆系统 + Obsidian 单向双通道
 hindsight:
   base_url: http://127.0.0.1:8888
-  api_key_env: HINDSIGHT_API_KEY     # 留空则不带
-  endpoints:                          # 与官方 REST 对齐;如版本差异在此覆盖
-    retain: /v1/memory/retain
-    recall: /v1/memory/recall
-    reflect: /v1/memory/reflect
-    banks: /v1/banks
+  api_key_env: HINDSIGHT_API_KEY     # 留空则不带(自托管默认无鉴权)
+  endpoints:                          # 对齐官方 HTTP API 1.1(openapi.json 核实 2026-10-25)
+    retain: /v1/default/banks/{bank}/memories
+    recall: /v1/default/banks/{bank}/memories/recall
+    reflect: /v1/default/banks/{bank}/reflect
+    banks: /v1/default/banks
+    config: /v1/default/banks/{bank}/config
+    webhooks: /v1/default/banks/{bank}/webhooks
     health: /health
   banks:
     dialogue: qq-agent     # 群聊记忆库
     knowledge: knowledge   # 知识库(vault 注入)
-  defense: true            # Memory Defense 开关(远端)
+  defense: true            # Memory Defense(按 bank config 下发: sensitive_data→redact)
+  webhook:                 # 生命周期事件回连 ME_Agent(consolidation/retain/defense)
+    url: http://host.docker.internal:8000/webhooks/hindsight   # Hindsight 容器→宿主机 ME_Agent
+    secret_env: HINDSIGHT_WEBHOOK_SECRET
+    event_types: [retain.completed, consolidation.completed, memory_defense.triggered]
 recall:
   top_k: 8
   timeout_ms: 800

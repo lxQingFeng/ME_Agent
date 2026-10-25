@@ -70,13 +70,47 @@ curl http://127.0.0.1:8000/api/v1/diagnostics/export
 1. `config/*.yaml`：人设、作息、心跳、通道、LLM、TTS 等（见 `config/` 12 份）。
 2. 敏感项走 `.env`（不入库）：至少 `ME_INTERNAL_TOKEN`（插件回连控制台令牌）、LLM API Key、`ONEBOT_ACCESS_TOKEN`。
 
+## Hindsight 记忆服务（Compose，37 一键部署）
+
+编排文件 `deploy/hindsight/docker-compose.yml`（镜像/端口/卷/环境变量名均经官方
+openapi.json + README 核实 2026-10-25）。**双 bank（qq-agent/knowledge）与 webhook 回连
+无需手工建：ME_Agent 启动时 `ensure_banks()` 幂等下发**（建库 PUT → Memory Defense
+redact 策略 → webhook 注册到 `http://host.docker.internal:8000/webhooks/hindsight`）。
+
+```bash
+# 1) 装好 Docker 后, 在仓库根执行(首次拉镜像约 1-2 分钟):
+docker compose -f deploy/hindsight/docker-compose.yml up -d
+
+# 2) .env 里给 Hindsight 配 LLM key(与主链路 DeepSeek 复用同一把):
+#    DEEPSEEK_API_KEY=sk-xxx          # 可选: HINDSIGHT_LLM_PROVIDER=deepseek(默认)
+#    HINDSIGHT_WEBHOOK_SECRET=xxx     # 可选: webhook HMAC 签名密钥(不配则不验签)
+
+# 3) 验证服务就绪(REST 8888 / Web UI 9999):
+curl http://127.0.0.1:8888/health
+# 浏览器打开 http://127.0.0.1:9999 可直接看记忆库
+
+# 4) 正常启动 ME_Agent(python -m app), 启动即自动:
+#    建 qq-agent/knowledge 双 bank → 开 Memory Defense → 注册 webhook 回连
+#    控制台「记忆」页 status 应显示 fail_streak=0、banks 双库就位
+
+# 排障: docker compose -f deploy/hindsight/docker-compose.yml logs -f hindsight
+# 静态校验(无 docker 也能跑): python3 deploy/hindsight/check_compose.py
+```
+
+说明：①Windows Docker Desktop 与 macOS 自带 `host.docker.internal`；Linux 由 compose
+`extra_hosts: host-gateway` 自动补；②数据在具名卷 `hindsight-data`（内嵌 Postgres），
+`docker compose down` 不丢、`down -v` 才清库；③端点/签名已对齐官方 API 1.1
+（`/v1/default/banks/{bank}/memories` 体系、`X-Hindsight-Signature: sha256=<hex>`）。
+
 ## 已验证 / 未验证边界（2026-10-25 沙箱实测）
 
 | 项 | 状态 |
 |---|---|
 | `python -m app` 全系统、reverse/forward 双模、断线自动重连、实例锁双开拒绝与回收、诊断导出零明文、冒烟 17/17 | ✅ 沙箱实测（tests/ 三套共 47 断言） |
+| 心跳回放/仲裁器/整形器单测（19+28+27=74 断言） | ✅ 沙箱实测（2026-10-25 第 6 轮，六套合计 121 断言全绿） |
+| Hindsight 编排（compose + 端点/签名对齐官方 API 1.1 + 静态校验 28/28） | ✅ 静态校验；容器拉起待 37 实机（见上「Hindsight 记忆服务」一键步骤） |
 | Windows .bat/.ps1 双击行为 | ⏳ 静态校验（bat 纯 ASCII、ps1 UTF-8 BOM），待实机确认 |
-| SnowLuma/NapCat 真机联调、真实上游 key、Hindsight compose | ⏳ 未实测（见 docs/实施进度.md 缺口清单） |
+| SnowLuma/NapCat 真机联调、真实上游 key | ⏳ 未实测（见 docs/实施进度.md 缺口清单，均需 37 实机操作） |
 
 ## 接入链路
 
@@ -98,6 +132,10 @@ forward 模式: Console(gateway) ──正向WS外连──> NapCat/Lagrange(One
 ```bash
 python3 tests/test_hardening.py       # 实例锁/双开拒绝/脱敏/诊断导出(20 断言)
 python3 tests/test_gateway_dual.py    # 通道双模+断线重连+reverse 回归(10 断言)
+python3 tests/test_heartbeat_replay.py  # 心跳回放/事件溯源一致性(19 断言)
+python3 tests/test_arbiter.py           # 仲裁器分级/突发合并/延迟决策(28 断言)
+python3 tests/test_shaper.py            # 整形器延迟/拆条/令牌桶/睡眠静默(27 断言)
 python3 -m app --no-engine &          # 冒烟目标(独立 ME_STATE_DIR 更佳)
-python3 tests/smoke_api.py            # API 冒烟(17 断言)
+python3 tests/smoke_api.py http://127.0.0.1:8000  # API 冒烟(17 断言)
+python3 deploy/hindsight/check_compose.py  # Hindsight 编排静态校验(28 断言)
 ```

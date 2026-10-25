@@ -1,0 +1,33 @@
+# Hindsight 记忆服务编排(ME_Agent 第 6 轮, 缺口 4)
+# 官方镜像与端口经 openapi.json + README 核实(2026-10-25); 双 bank 与 webhook 由
+# ME_Agent 启动时 ensure_banks() 幂等下发(bank 创建/Defense/webhook 注册)。
+# 用法: 37 一键部署见 deploy/README.md「Hindsight 记忆服务(Compose)」。
+name: me-agent-hindsight
+
+services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest   # 内嵌 Postgres+pg0, 单容器自包含
+    container_name: me-hindsight
+    restart: unless-stopped
+    ports:
+      - "8888:8888"        # REST API(ME_Agent /api 回连这里)
+      - "9999:9999"        # Web UI(浏览器看记忆库)
+    environment:
+      # LLM 抽取/embedding 走 DeepSeek(与 config/llm.yaml 同一 key 可复用)
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_LLM_PROVIDER:-deepseek}
+      HINDSIGHT_API_LLM_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0   # 官方指定持久化路径(内嵌库)
+    extra_hosts:
+      # Linux 下回连宿主机; Windows/macOS Docker Desktop 自带该域名
+      - "host.docker.internal:host-gateway"
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8888/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  hindsight-data:

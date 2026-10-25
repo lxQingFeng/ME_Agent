@@ -76,11 +76,21 @@ class Arbiter:
         chat = env["chat_id"]
         slot = self._burst.get(chat)
         now = time.time()
+        overflow: list[dict] | None = None
         if slot is None or now - slot["last"] > 2.5 or len(slot["envs"]) >= 8:
             if slot is not None:
                 slot["task"].cancel()
+                if slot["envs"]:
+                    overflow = slot["envs"]  # 满仓/过期换仓: 已积压消息必须先放行, 不能静默丢弃
             slot = {"envs": [], "last": now, "task": None}
             self._burst[chat] = slot
+        if overflow:
+            base = overflow[0]
+            if len(overflow) > 1:
+                base = dict(base)
+                base["text"] = " / ".join(e["text"] for e in overflow if e.get("text"))
+                base["merged_count"] = len(overflow)
+            await self._route_merged(base)
         slot["envs"].append(env)
         slot["last"] = now
         if slot["task"]:

@@ -33,6 +33,8 @@ class OutboundShaper:
         await asyncio.sleep(self.rng.uniform(lo, hi) / 1000.0)
 
     def _bucket_take(self, chat_id: str) -> bool:
+        if self._virtual():
+            return True   # 虚拟时钟(压缩测试)下令牌桶直通, 否则桶空会忙等死循环
         rate = int(self.shaping.get("group_rate_per_min", 8))
         now = time.time()
         ts, tokens = self._tokens.get(chat_id, (now, rate))
@@ -136,6 +138,8 @@ class OutboundShaper:
         await self.send(chat_id, text, origin="broadcast")
 
 def _in_window(window: str, lt) -> bool:
+    if window == "*":
+        return True
     a, _, b = window.partition("-")
     lo = int(a[:2]) * 60 + int(a[3:5])
     hi = int(b[:2]) * 60 + int(b[3:5])
