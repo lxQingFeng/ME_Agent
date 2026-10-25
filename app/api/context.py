@@ -106,6 +106,29 @@ class AppContext:
         self.tasks: list[asyncio.Task] = []
         self._started = False
 
+    # ================= 设置热生效(第 11 轮) =================
+    async def apply_llm_settings(self) -> dict:
+        """LLM 设置保存后的热生效: 重建客户端并重新接线对话管道/心跳引擎。
+
+        人设无状态(对话管道每次从 settings.persona 现取), reload() 即生效;
+        LLM 客户端持有 base_url/鉴权头 → 必须重建。旧客户端关闭释放连接。
+        """
+        self.settings.reload()
+        old = self.llm
+        self.llm = LLMClient(self.settings.llm_cfg, self.settings.llm_api_key())
+        self.llm_or_none = self.llm if self.llm.enabled else None
+        self.pipeline.llm = self.llm_or_none      # 对话管道(群聊回复)
+        self.engine.llm = self.llm_or_none        # 心跳引擎(世界推演/计划)
+        if old is not None:
+            try:
+                await old.close()
+            except Exception:
+                pass
+        return {"enabled": self.llm.enabled, "base_url": self.settings.llm_cfg.get("base_url"),
+                "chat_model": self.settings.llm_cfg.get("chat_model"),
+                "planner_model": self.settings.llm_cfg.get("planner_model"),
+                "persona_name": self.settings.persona.get("name", "")}
+
     # ================= 启动 / 停止 =================
 
     async def startup(self) -> None:

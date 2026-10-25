@@ -36,9 +36,18 @@ async def program_action(request: Request, pid: str, action: str):
 
 
 @router.get("/{pid}/logs")
-def program_logs(request: Request, pid: str, limit: int = 80):
+def program_logs(request: Request, pid: str, limit: int = 200, offset: int | None = None):
+    """程序日志(第 11 轮升级: 全量/分页可读, 37 能翻到启动段拿 WebUI 凭据)。
+
+    - 不传 offset(默认): 尾部语义 —— 返回末尾 limit 行(V4 console 兼容);
+    - offset>=0: 行号分页 —— lines[offset : offset+limit], has_more 指示翻页;
+    - limit=0: 从 offset(缺省 0)读到结尾(全量);
+    - 响应恒带 total 总行数, offset 回真实起始行号。
+    """
     ctx = request.app.state.ctx
-    return {"id": pid, "lines": ctx.programs.logs(pid, limit)}
+    page = ctx.programs.logs_page(pid, offset=offset, limit=limit)
+    return {"id": pid, "total": page["total"], "offset": page["offset"],
+            "has_more": page["has_more"], "lines": page["lines"]}
 
 
 @router.get("/{pid}/check-latest")

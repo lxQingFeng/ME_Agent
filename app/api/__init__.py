@@ -5,7 +5,8 @@ create_app(ctx) 装配全部路由:
   /api/v1/chat/*     对话流(会话/消息/测试发送)
   /api/v1/plugins/*  插件技能(列表/启停/手动调用)
   /api/internal/*    插件沙箱回连(X-Internal-Token)
-  /api/v1/programs/* 第三方程序(状态/动作/日志)
+  /api/v1/programs/* 第三方程序(状态/动作/日志/全量分页)
+  /api/v1/settings/* LLM/人设设置(保存热生效, 密钥脱敏)
   /api/v1/tts/*      TTS 全套(模型/配置/检查/试合成/克隆)
   /api/v1/system/*   健康检查/全系统状态/引擎控制
   /api/v1/diagnostics/export  诊断包导出(密钥全部脱敏为 hasXxx 指纹)
@@ -24,7 +25,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import chat, diagnostics, plugins, programs, system, tts, world
+from app.api import chat, diagnostics, plugins, programs, settings, system, tts, world
 from app.api.ws import ws_router
 from app.memory.webhooks import webhook_router
 
@@ -58,6 +59,7 @@ def create_app(ctx) -> FastAPI:
     app.include_router(tts.router)
     app.include_router(system.router)
     app.include_router(diagnostics.router)
+    app.include_router(settings.router)   # 第 11 轮: LLM/人设设置(保存热生效)
     app.include_router(webhook_router(ctx.settings, ctx.bus))
 
     # ---- WS 路由 ----

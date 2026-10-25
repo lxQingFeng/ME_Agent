@@ -574,6 +574,458 @@ def test_real_github_chain() -> None:
     shutil.rmtree(state, ignore_errors=True)
 
 
+# ---------------- G: Win 探测失效路径模拟(第 11 轮状态失真回归) ----------------
+def test_win_probe_failure() -> None:
+    print("[G] Win 探测失效模拟: 句柄优先不误杀 running + 重复 start 拒绝 + 秒退留痕")
+    import signal as _signal
+    from app.programs import manager as M
+
+    state = Path(tempfile.mkdtemp(prefix="me-pg-"))
+    bus = FakeBus()
+    m = _manager(state, bus)
+
+    async def run():
+        d = m.def_("snowluma") or {}
+        st = m._st("snowluma")
+        st.update(status="installed", version="1.0", install_dir=str(state))
+        st["command"] = ["bash", "-c", "sleep 30"]
+        out = await m.start("snowluma")
+        check("G1 start 真实 spawn 成功", out.get("ok") is True and out.get("pid"), str(out)[:80])
+        pid = st.get("pid")
+
+        # 模拟 Windows 旧 /proc 口径: pid 探测恒失效(37 实机 bug 根因复现)
+        orig = M._pid_alive
+        M._pid_alive = lambda p, s=None: False
+        try:
+            await m._monitor_once(d)
+            check("G2 pid 探测恒失效 + 句柄活着 → running 不被误翻(核心回归)",
+                  st.get("status") == "running" and st.get("pid") == pid)
+        finally:
+            M._pid_alive = orig
+
+        out2 = await m.start("snowluma")
+        check("G3 running 时重复 start 明确拒绝(ok=False + running=True)",
+              out2.get("ok") is False and out2.get("running") is True
+              and "拒绝" in (out2.get("error") or ""), str(out2)[:80])
+
+        # 句柄丢失(模拟服务重启) + 探测恒失效 → 才降级(探测全坏时的保守边界)
+        m._procs.pop("snowluma", None)
+        M._pid_alive = lambda p, s=None: False
+        try:
+            await m._monitor_once(d)
+            check("G4 句柄丢失 + 探测全坏 → 才判 stopped(服务重启场景靠平台探测)",
+                  st.get("status") == "stopped")
+        finally:
+            M._pid_alive = orig
+        try:
+            import os as _os
+            _os.kill(pid, _signal.SIGKILL)   # 清理 G1 孤儿
+        except Exception:
+            pass
+
+        # 秒退探测: exit code + stderr 尾部留痕
+        st.update(status="installed")
+        st["command"] = ["bash", "-c", "echo boom >&2; exit 3"]
+        out3 = await m.start("snowluma")
+        logf = m.logs_dir / "snowluma.log"
+        logtxt = logf.read_text("utf-8", errors="replace") if logf.exists() else ""
+        check("G5 秒退探测: ok=False + exit_code=3 + log_tail 带 stderr + 日志留痕",
+              out3.get("ok") is False and out3.get("exit_code") == 3
+              and "boom" in (out3.get("log_tail") or "") and "exit=3" in logtxt,
+              str(out3)[:100])
+
+        # 服务重启模拟: 新 manager 丢句柄, 持久化 pid 真活(真实 /proc 探测) → running 保持
+        st.update(status="installed")
+        st["command"] = ["bash", "-c", "sleep 30"]
+        out4 = await m.start("snowluma")
+        real_pid = st.get("pid")
+        m2 = _manager(state, FakeBus())
+        st2 = m2._st("snowluma")
+        check("G6 服务重启(丢句柄): 持久化 pid 真活 → 状态保持 running(跨刷新稳定)",
+              st2.get("status") == "running" and st2.get("pid") == real_pid)
+        out5 = await m2.start("snowluma")
+        check("G6b 丢句柄但 pid 在跑 → 重复 start 仍拒绝(防双开)",
+              out5.get("ok") is False and out5.get("running") is True, str(out5)[:80])
+
+        import os as _os
+        _os.kill(real_pid, _signal.SIGKILL)
+        await asyncio.sleep(0.3)
+        m3 = _manager(state, FakeBus())
+        check("G7 进程真死 → 新管理器判 stopped", m3._st("snowluma").get("status") == "stopped")
+
+    asyncio.run(run())
+    try:
+        asyncio.run(m.close())
+    except Exception:
+        pass
+    shutil.rmtree(state, ignore_errors=True)
+
+
+def test_pid_probe_dispatch() -> None:
+    print("[G2] _pid_alive 平台分派(Windows ctypes/tasklist 路径)")
+    from app.programs import manager as M
+
+    orig = (M._IS_WIN, M._win_openproc_alive, M._tasklist_has)
+    try:
+        M._IS_WIN = True
+        M._win_openproc_alive = lambda p, s=None: True
+        M._tasklist_has = lambda p: False
+        check("G8a ctypes OpenProcess 判活优先", M._pid_alive(1234) is True)
+        M._win_openproc_alive = lambda p, s=None: None
+        M._tasklist_has = lambda p: True
+        check("G8b ctypes 不可用 → tasklist 兜底判活", M._pid_alive(1234) is True)
+        M._tasklist_has = lambda p: False
+        check("G8c 双探测均无信号 → 判死(不悬停 running)", M._pid_alive(1234) is False)
+        M._win_openproc_alive = lambda p, s=None: False
+        check("G8d OpenProcess 明确判死(非 STILL_ACTIVE)", M._pid_alive(1234) is False)
+        check("G8e 空/非法 pid → False", M._pid_alive(None) is False
+              and M._pid_alive("abc") is False and M._pid_alive(-1) is False)
+        # POSIX 路径不受 patch 影响: 真进程(自己)存活
+        M._IS_WIN = False
+        check("G8f POSIX 口径: /proc 探测自身进程", M._pid_alive(__import__("os").getpid()) is True)
+    finally:
+        M._IS_WIN, M._win_openproc_alive, M._tasklist_has = orig
+
+
+# ---------------- H: SnowLuma 令牌提取 + 日志分页 + 轮转 ----------------
+def test_token_and_logs() -> None:
+    print("[H] SnowLuma WebUI 令牌提取 + 日志全量/分页 + 尺寸轮转")
+    state = Path(tempfile.mkdtemp(prefix="me-ph-"))
+    bus = FakeBus()
+    m = _manager(state, bus)
+    st = m._st("snowluma")
+    st.update(status="running", pid=4321)
+
+    logf = m.logs_dir / "snowluma.log"
+    startup = "\n".join([
+        "2026-10-25 20:00:01 INFO  [WebUI] ══════════════════════════════════════",
+        "2026-10-25 20:00:01 INFO  [WebUI]   ★ WebUI 初始登录凭据 / Initial WebUI Credentials ★",
+        "2026-10-25 20:00:01 INFO  [WebUI]   请立即登录并修改密码 —— 关闭程序后此密码无法找回。",
+        "2026-10-25 20:00:01 INFO  [WebUI]   若跳过初始改密，下次启动将自动生成新的随机密码。",
+        "2026-10-25 20:00:01 INFO  [WebUI]   Log in and change the password now; it will not be shown again.",
+        "2026-10-25 20:00:01 INFO  [WebUI] ────────────────────────────────────────",
+        "2026-10-25 20:00:01 INFO  [WebUI] initial credentials: user=admin password=Xk9Tz2mQw7LnP4vR",
+        "2026-10-25 20:00:01 INFO  [WebUI] ══════════════════════════════════════",
+        "2026-10-25 20:00:01 INFO  [WebUI] login rate-limit keyed by: loopback",
+        "2026-10-25 20:00:01 INFO  [WebUI] listening http://127.0.0.1:5099",
+    ])
+    logf.write_text(startup, "utf-8")
+    m._scan_tokens("snowluma")
+    check("H1 令牌提取(v2.2.0 真实输出格式)", st.get("webui_token") == "Xk9Tz2mQw7LnP4vR",
+          str(st.get("webui_token")))
+    check("H2 user / webui_url 提取", st.get("webui_user") == "admin"
+          and st.get("webui_url") == "http://127.0.0.1:5099")
+    evs = [e for e in bus.events if e[0] == "program.webui"]
+    check("H3 检测到时 WS program.webui 推送", len(evs) == 1
+          and evs[0][1].get("token") == "Xk9Tz2mQw7LnP4vR")
+    lst = {p["id"]: p for p in m.list()}
+    check("H4 list() 程序详情暴露 webui 字段",
+          (lst["snowluma"].get("webui") or {}).get("token") == "Xk9Tz2mQw7LnP4vR")
+
+    async def notify():
+        await m._notify("snowluma")
+    asyncio.run(notify())
+    check("H4b program.status 事件体携带 webui(单 topic 订阅可见)",
+          any(e[0] == "program.status" and (e[1] or {}).get("webui", {}).get("token")
+              == "Xk9Tz2mQw7LnP4vR" for e in bus.events))
+
+    with logf.open("a", encoding="utf-8") as fh:
+        fh.write("\n2026-10-25 20:05:00 INFO  [WebUI] initial credentials: user=admin password=NewTok9988\n")
+    m._scan_tokens("snowluma")
+    check("H5 进程重启换新令牌 → 覆盖旧值", st.get("webui_token") == "NewTok9988")
+    with logf.open("a", encoding="utf-8") as fh:
+        fh.write("\n2026-10-25 20:06:00 INFO  [WebUI] keepalive\n")
+    m._scan_tokens("snowluma")
+    check("H6 增量扫描(不重扫旧内容, 无新令牌不变)", st.get("webui_token") == "NewTok9988")
+
+    for i in range(30):
+        with logf.open("a", encoding="utf-8") as fh:
+            fh.write(f"line-{i:02d}\n")
+    pg = m.logs_page("snowluma", offset=0, limit=10)
+    all_lines = logf.read_text("utf-8", errors="replace").splitlines()
+    check("H7 分页 offset=0/limit=10: 文件前10行 + total + has_more",
+          pg["total"] == len(all_lines) and len(pg["lines"]) == 10
+          and pg["lines"] == all_lines[:10] and pg["has_more"] is True, str(pg)[:100])
+    pg2 = m.logs_page("snowluma", offset=pg["total"] - 3, limit=10)
+    check("H8 分页尾页(越界安全)", len(pg2["lines"]) == 3 and pg2["has_more"] is False
+          and pg2["lines"][-1] == "line-29")
+    pg3 = m.logs_page("snowluma", limit=5)
+    check("H9 尾部语义(不传 offset, V4 兼容): 末尾5行 + offset 回真实行号",
+          pg3["lines"][-1] == "line-29" and pg3["offset"] == pg3["total"] - 5)
+    pg4 = m.logs_page("snowluma", offset=0, limit=0)
+    check("H10 limit=0 → 全量(启动段可整段翻阅)",
+          len(pg4["lines"]) == pg4["total"] and pg4["has_more"] is False)
+
+    m._token_scan_off.pop("snowluma", None)
+    big = "x" * 6000 + "\n" + "tail-line-keep\n" + "y" * 200
+    logf.write_text(big, "utf-8")
+    m._maybe_rotate_log("snowluma", max_bytes=4096, keep_bytes=256)
+    content = logf.read_text("utf-8", errors="replace")
+    check("H11 轮转: 超限保尾且整行对齐", logf.stat().st_size < 6000
+          and "tail-line-keep" in content and not content.startswith("x" * 100))
+    check("H12 轮转后扫描偏移重置(幂等重扫)", m._token_scan_off.get("snowluma") == 0)
+    shutil.rmtree(state, ignore_errors=True)
+
+
+# ---------------- I: install/update 慢下载进度回报 ----------------
+def test_download_progress() -> None:
+    print("[I] 慢下载进度回报: busy 轮询可见 + WS program.progress 事件流")
+    import io
+    import zipfile
+    import httpx
+
+    state = Path(tempfile.mkdtemp(prefix="me-pi-"))
+    bus = FakeBus()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("launcher.sh", "#!/usr/bin/env bash\nsleep 30\n")
+        z.writestr("node", "stub")
+        for i in range(60):
+            z.writestr(f"data/{i}.bin", "A" * 4096)
+    payload = buf.getvalue()
+    chunks = [payload[i:i + 16384] for i in range(0, len(payload), 16384)]
+
+    class SlowStream(httpx.AsyncByteStream):
+        def __init__(self, chs, delay=0.08):
+            self._chs, self._delay = chs, delay
+        async def __aiter__(self):
+            for c in self._chs:
+                await asyncio.sleep(self._delay)
+                yield c
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/repos/"):
+            return httpx.Response(200, json={
+                "tag_name": "v1.5.0", "body": "",
+                "assets": [{"name": "y-win-x64.zip",
+                            "browser_download_url": "https://x/y-win-x64.zip",
+                            "size": len(payload)}]})
+        return httpx.Response(200, headers={"content-length": str(len(payload))},
+                              stream=SlowStream(chunks))
+
+    m = _manager(state, bus, transport=httpx.MockTransport(handler))
+    m.defs = [{"id": "y1", "kind": "binary",
+               "source": {"type": "github_release", "repo": "a/b",
+                          "asset_pattern": r"win-x64\.zip$"},
+               "run": {"health": {"type": "ws_event", "interval_s": 30}}}]
+    m._def_by_id = {d["id"]: d for d in m.defs}
+    m._st("y1")
+
+    async def run():
+        q = await m.run_action_async("y1", "install")
+        check("I1 install 异步排队(busy)", q.get("queued") is True
+              and m._st("y1").get("status") == "busy")
+        mid = None
+        t0 = time.time()
+        while time.time() - t0 < 15:
+            if "y1" not in m._busy:
+                break
+            prog = m._st("y1").get("progress") or {}
+            if prog.get("phase") == "download" and (prog.get("percent") or 0) > 0 \
+                    and prog.get("percent") < 100:
+                mid = dict(prog)
+                break
+            await asyncio.sleep(0.05)
+        check("I2 下载中进度可见(已下载/总字节/百分比/速度)",
+              mid is not None and mid.get("total") == len(payload)
+              and 0 < (mid.get("percent") or 0) < 100
+              and mid.get("downloaded", 0) > 0 and mid.get("speed_bps", 0) > 0, str(mid))
+        t0 = time.time()
+        while "y1" in m._busy and time.time() - t0 < 20:
+            await asyncio.sleep(0.05)
+        st = m._st("y1")
+        check("I3 安装完成: installed + progress 收口清除 + 版本记录",
+              st.get("status") == "installed" and st.get("progress") is None
+              and st.get("version") == "1.5.0")
+        evs = [e[1] for e in bus.events if e[0] == "program.progress"]
+        dl = [e for e in evs if e.get("phase") == "download"]
+        ex = [e for e in evs if e.get("phase") == "extract"]
+        final = dl[-1] if dl else {}
+        check("I4 WS program.progress: download 事件流 + 终态 100%",
+              len(dl) >= 2 and final.get("percent") == 100.0 and final.get("done") is True
+              and final.get("downloaded") == len(payload), str(final)[:100])
+        check("I5 extract 阶段事件(阶段型进度)", len(ex) >= 1)
+
+    asyncio.run(run())
+    try:
+        asyncio.run(m.close())
+    except Exception:
+        pass
+    shutil.rmtree(state, ignore_errors=True)
+
+
+def test_download_unknown_size_and_failure() -> None:
+    print("[I2] 未知长度下载(percent=None) + 失败路径进度收口")
+    import io
+    import zipfile
+    import httpx
+
+    state = Path(tempfile.mkdtemp(prefix="me-pi2-"))
+    bus = FakeBus()
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("launcher.sh", "sleep 30\n")
+    payload = buf.getvalue()
+    chunks = [payload[i:i + 8192] for i in range(0, len(payload), 8192)]
+
+    class SlowStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for c in chunks:
+                await asyncio.sleep(0.6)
+                yield c
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/repos/"):
+            return httpx.Response(200, json={
+                "tag_name": "v1.6.0", "body": "",
+                "assets": [{"name": "y-win-x64.zip",
+                            "browser_download_url": "https://x/y-win-x64.zip",
+                            "size": len(payload)}]})
+        return httpx.Response(200, stream=SlowStream())   # 无 content-length
+
+    m = _manager(state, bus, transport=httpx.MockTransport(handler))
+    m.defs = [{"id": "y2", "kind": "binary",
+               "source": {"type": "github_release", "repo": "a/b",
+                          "asset_pattern": r"win-x64\.zip$"},
+               "run": {"health": {"type": "ws_event", "interval_s": 30}}}]
+    m._def_by_id = {d["id"]: d for d in m.defs}
+    m._st("y2")
+
+    async def run():
+        await m.run_action_async("y2", "install")
+        t0 = time.time()
+        while "y2" in m._busy and time.time() - t0 < 15:
+            await asyncio.sleep(0.1)
+        evs = [e[1] for e in bus.events if e[0] == "program.progress"]
+        unknown = [e for e in evs if e.get("phase") == "download"
+                   and "percent" in e and e.get("percent") is None]
+        check("I6 未知长度(无 content-length) → percent=None 不瞎编",
+              len(unknown) >= 1 and unknown[0].get("total") == 0, str(unknown[:1])[:100])
+
+    asyncio.run(run())
+    try:
+        asyncio.run(m.close())
+    except Exception:
+        pass
+
+    # 失败路径: 资产 404 → 下载异常 → progress 收口 + last_action 留痕
+    bus2 = FakeBus()
+
+    def handler404(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/repos/"):
+            return httpx.Response(200, json={
+                "tag_name": "v1.7.0", "body": "",
+                "assets": [{"name": "y-win-x64.zip",
+                            "browser_download_url": "https://x/y-win-x64.zip", "size": 10}]})
+        return httpx.Response(404)
+
+    m2 = _manager(state, bus2, transport=httpx.MockTransport(handler404))
+    m2.defs = [{"id": "y3", "kind": "binary",
+                "source": {"type": "github_release", "repo": "a/b",
+                           "asset_pattern": r"win-x64\.zip$"},
+                "run": {"health": {"type": "ws_event", "interval_s": 30}}}]
+    m2._def_by_id = {d["id"]: d for d in m2.defs}
+    m2._st("y3")
+
+    async def run2():
+        await m2.run_action_async("y3", "install")
+        t0 = time.time()
+        while "y3" in m2._busy and time.time() - t0 < 15:
+            await asyncio.sleep(0.05)
+        st = m2._st("y3")
+        check("I7 下载失败: progress 收口清除 + last_action.ok=False 留痕",
+              st.get("progress") is None and (st.get("last_action") or {}).get("ok") is False,
+              str(st.get("last_action"))[:100])
+
+    asyncio.run(run2())
+    try:
+        asyncio.run(m2.close())
+    except Exception:
+        pass
+    shutil.rmtree(state, ignore_errors=True)
+
+
+# ---------------- J: docker 容器真实状态口径 ----------------
+def test_docker_inspect_status() -> None:
+    print("[J] docker inspect 容器状态为准 + 重复 start 拒绝 + installed 不被 http 误翻")
+    import httpx
+    from app.programs import manager as M
+
+    state = Path(tempfile.mkdtemp(prefix="me-pj-"))
+    # 模拟本机有 docker CLI(which 探测)
+    orig_which = M.shutil.which
+    M.shutil.which = lambda n: "/usr/bin/docker" if n == "docker" else orig_which(n)
+    try:
+        m = _manager(state, FakeBus())
+        d = m.def_("hindsight") or {}
+        st = m._st("hindsight")
+        st.update(status="installed", container="me-hindsight", version="latest")
+
+        async def run():
+            async def fake_avail():
+                return True
+            m._docker_available = fake_avail
+
+            async def cmd(resp: str):
+                async def f(args, timeout_s=60.0):
+                    if args[:2] == ["docker", "inspect"] and "{{.State.Running}}" in args:
+                        return 0, resp
+                    return 0, ""
+                return f
+
+            m._run_cmd = await cmd("true\n")
+            await m._monitor_once(d)
+            h = m._health_cache.get("hindsight") or {}
+            check("J1 inspect=running → installed 升为 running(容器为准)",
+                  st.get("status") == "running" and h.get("status") == "running")
+
+            m._run_cmd = await cmd("false\n")
+            await m._monitor_once(d)
+            check("J2 inspect=stopped → 降为 stopped + health 记录",
+                  st.get("status") == "stopped"
+                  and (m._health_cache.get("hindsight") or {}).get("status") == "stopped")
+
+            m._run_cmd = await cmd("true\n")
+            await m._monitor_once(d)
+            out = await m.start("hindsight")
+            check("J3 容器 running 时重复 start 拒绝(ok=False + running=True)",
+                  out.get("ok") is False and out.get("running") is True, str(out)[:80])
+
+        asyncio.run(run())
+    finally:
+        M.shutil.which = orig_which
+
+    # J4: 无 docker CLI(inspect 无信号) → http 兜底; installed 探测失败不再误翻 stopped
+    state2 = Path(tempfile.mkdtemp(prefix="me-pj2-"))
+
+    def probe_fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    m2 = _manager(state2, FakeBus(), transport=httpx.MockTransport(probe_fail))
+    d2 = m2.def_("hindsight") or {}
+    st2 = m2._st("hindsight")
+    st2.update(status="installed", container="me-hindsight", version="latest")
+
+    async def run2():
+        await m2._monitor_once(d2)
+        check("J4 installed + http 探测失败 → 保持 installed(旧版误翻 stopped)",
+              st2.get("status") == "installed", st2.get("status"))
+        st2.update(status="running")
+        await m2._monitor_once(d2)
+        check("J5 running + http 探测失败 → 降级 stopped(在跑才可降级)",
+              st2.get("status") == "stopped")
+
+    asyncio.run(run2())
+    try:
+        asyncio.run(m2.close())
+    except Exception:
+        pass
+    shutil.rmtree(state, ignore_errors=True)
+    shutil.rmtree(state2, ignore_errors=True)
+
+
 def main() -> int:
     t0 = time.time()
     test_async_actions()
@@ -582,8 +1034,14 @@ def main() -> int:
     test_hindsight_no_docker()
     test_api_contract()
     test_real_github_chain()
+    test_win_probe_failure()
+    test_pid_probe_dispatch()
+    test_token_and_logs()
+    test_download_progress()
+    test_download_unknown_size_and_failure()
+    test_docker_inspect_status()
     failed = [r for r in RESULTS if not r[1]]
-    print(f"\n第10轮专项: {len(RESULTS) - len(failed)}/{len(RESULTS)} PASS" +
+    print(f"\n第10+11轮专项: {len(RESULTS) - len(failed)}/{len(RESULTS)} PASS" +
           (f", {len(SKIPS)} SKIP" if SKIPS else "") +
           ("" if not failed else f", {len(failed)} FAIL: {[r[0] for r in failed]}") +
           f"  ({time.time() - t0:.0f}s)")

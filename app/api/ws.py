@@ -16,8 +16,8 @@ router = APIRouter(tags=["ws"])
 
 PUSH_TOPICS = ("engine.tick", "engine.wake", "message.in", "message.out",
                "onebot.message", "onebot.notice", "gateway.status",
-               "program.status", "hindsight.webhook", "tts.status",
-               "obsidian.sync")
+               "program.status", "program.progress", "program.webui",
+               "hindsight.webhook", "tts.status", "obsidian.sync")
 
 
 def ws_router(bus) -> APIRouter:

@@ -16,10 +16,26 @@
 - run.command 为空 → 外部自管, 健康由 run.health 探测(http / ws_event / internal)。
 
 长动作异步化: install/update 由 API 层经 run_action_async() 转后台任务执行——
+程序状态置 busy 防重复触发, 进度写 st["progress"] 并经 WS program.progress 推送
+(第 11 轮: 已下载/总字节/百分比/速度; docker 形态为阶段级 phase=pull/extract)。
+
+第 11 轮(37 实机反馈修复):
+- 进程存活探测平台感知: Windows OpenProcess(ctypes)+tasklist 兜底, macOS 无 /proc
+  退 os.kill; spawn 句柄 poll 恒优先(修「刷新后变已停止」根因);
+- docker 形态状态以 docker inspect 容器真实状态为准, http 只补 detail(容器在跑
+  而 REST 未就绪 ≠ 已停止); installed 不再被 http 探测失败误翻为 stopped;
+- 重复 start 明确拒绝(ok=False+running=True); spawn 后 1.5s 秒退探测(exit code
+  + 日志尾部 + 修复指引); Windows 直连自带 node.exe+index.mjs(避开 .bat 的
+  pause 挂起与孤儿进程);
+- 日志全量/分页读取(logs_page: offset/limit/total/has_more); 按程序 webui 配置
+  的正则从日志增量提取登录凭据(st.webui_token, WS program.webui 推送),
+  解决 37 拿不到 SnowLuma WebUI 初始密码的问题; 日志超 50MB 自动保尾轮转。
+
 程序状态置 busy(防重复触发), 完成后状态落回 installed/running 并发 program.status
 事件; 调用方立即拿到 {queued: true} 响应, 经 GET /api/v1/programs 轮询进度。
 
-监控: monitor 循环每 N 秒刷新进程状态, 状态变化时向 bus 发 program.status 事件(WS 推送)。
+监控: monitor 循环每 10s 刷新进程/容器状态并做令牌增量扫描, 状态变化时向 bus 发
+program.status 事件(WS 推送)。
 """
 from __future__ import annotations
 
@@ -68,6 +84,7 @@ class ProgramManager:
         self._internal_tasks: dict[str, asyncio.Task] = {}
         self._log_buffers: dict[str, list[str]] = {}
         self._health_cache: dict[str, dict] = {}
+        self._token_scan_off: dict[str, int] = {}   # pid → 令牌扫描已读字节偏移(增量)
         self._busy: dict[str, str] = {}            # pid -> 执行中的长动作名(install/update)
         self._action_tasks: dict[str, asyncio.Task] = {}
         self._compose: list[str] | None = None     # 缓存 compose 命令(['docker','compose'] / ['docker-compose'] / [] 不可用)
@@ -96,7 +113,9 @@ class ProgramManager:
                 st["status"] = ("installed" if (st.get("install_dir") or st.get("version")
                                                or st.get("container")) else "not_installed")
             pid = st.get("pid")
-            if pid and not _pid_alive(pid):
+            if pid and not _pid_alive(pid, st.get("started_at")):
+                # 平台感知探测(第 11 轮): Windows 下句柄丢失(服务重启)但进程真在跑
+                # → 保持 running(此前 /proc 恒判死导致 37 实机刷新即回跳 stopped)
                 if st["status"] == "running":
                     st["status"] = "stopped"
                 st["pid"] = None
@@ -175,12 +194,52 @@ class ProgramManager:
             self._save_state()
         return rel
 
-    async def _download(self, url: str, dest: Path) -> None:
+    async def _download(self, url: str, dest: Path, pid: str | None = None) -> None:
+        """流式下载; pid 给定时回报进度(第 11 轮):
+        st["progress"] = {phase, downloaded, total, percent, speed_bps} 供 busy 轮询,
+        并经 WS topic program.progress 推送(0.5s 节流)。"""
+        st = self._st(pid) if pid else None
+        last_emit = 0.0
         async with self._client_ensure().stream("GET", url) as resp:
             resp.raise_for_status()
+            total = int(resp.headers.get("content-length") or 0)   # 0 = 未知(分块)
+            done = 0
+            t0 = time.monotonic()
             with dest.open("wb") as f:
                 async for chunk in resp.aiter_bytes(65536):
                     f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if st is not None and now - last_emit >= 0.5:
+                        last_emit = now
+                        self._report_progress(pid, "download", done, total, t0)
+        if st is not None:
+            self._report_progress(pid, "download", done, total or done, t0, final=True)
+
+    def _report_progress(self, pid: str, phase: str, done: int, total: int,
+                         t0: float, final: bool = False) -> None:
+        """写程序状态(busy 轮询可见) + WS 推送 program.progress。"""
+        st = self._st(pid)
+        elapsed = max(1e-6, time.monotonic() - t0)
+        pct = round(done / total * 100, 1) if total else None
+        prog = {"phase": phase, "downloaded": done, "total": total,
+                "percent": pct, "speed_bps": int(done / elapsed)}
+        if final:
+            prog["percent"] = 100.0
+            prog["done"] = True
+        st["progress"] = prog
+        self._save_state()
+        if self.bus:
+            self.bus.emit("program.progress", {"id": pid, **prog})
+
+    def _set_phase(self, pid: str, phase: str, detail: str = "") -> None:
+        """无字节语义的阶段进度(docker pull/extract 等): 阶段名 + 说明。"""
+        st = self._st(pid)
+        prog = {"phase": phase, "detail": detail}
+        st["progress"] = prog
+        self._save_state()
+        if self.bus:
+            self.bus.emit("program.progress", {"id": pid, **prog})
 
     def _extract(self, archive: Path, target: Path) -> int:
         target.mkdir(parents=True, exist_ok=True)
@@ -196,9 +255,20 @@ class ProgramManager:
 
     def _guess_command(self, install_dir: Path, pid: str) -> list[str] | None:
         """平台感知地找启动入口, 供 binary 形态使用。
-        Windows: launcher.bat/launcher.exe/run.bat/*.exe;
-        POSIX:   launcher.sh/run.sh/*.sh(经 bash 执行), 无脚本时保留 .exe 便于诊断。"""
+        Windows: ① 自带 node.exe + index.mjs → 直连 spawn(优先, 见下);
+                 ② launcher.bat/launcher.exe/run.bat/*.exe;
+        POSIX:   launcher.sh/run.sh/*.sh(经 bash 执行), 无脚本时保留 .exe 便于诊断。
+
+        Windows 直连 node 的理由(第 11 轮): .bat 包装器(如 SnowLuma win 包)末尾有
+        pause —— node 退出后 cmd 停在「请按任意键」, 进程句柄恒活、exit code 丢失,
+        且 terminate 只杀 cmd 会孤儿化 node(端口仍被占)。直连 node.exe 则
+        生命周期/退出码/停止语义全部真实。
+        """
         if sys.platform == "win32":
+            node = install_dir / "node.exe"
+            entry = install_dir / "index.mjs"
+            if node.is_file() and entry.is_file():
+                return [str(node), str(entry)]
             for pat in ("launcher.bat", "launcher.exe", "run.bat", "run.cmd", "*.exe"):
                 cands = sorted(install_dir.rglob(pat))
                 if cands:
@@ -251,11 +321,17 @@ class ProgramManager:
             archive = self.dl_dir / f"{pid}-{rel['version']}-{asset['name']}"
             try:
                 if not (archive.exists() and archive.stat().st_size == asset.get("size", -1)):
-                    await self._download(asset["url"], archive)   # 已有同版本同大小缓存则复用
+                    self._set_phase(pid, "download", f"下载 {asset['name']}")
+                    await self._download(asset["url"], archive, pid=pid)   # 已有同版本同大小缓存则复用
+                self._set_phase(pid, "extract", f"解压 → opt/{pid}/{rel['version']}")
                 n = self._extract(archive, self.opt_dir / pid / rel["version"])
             except Exception as e:
+                self._st(pid).pop("progress", None)
+                self._save_state()
                 return {"ok": False, "error": f"下载/解压失败: {type(e).__name__}: {e}"}
             if n == 0:
+                self._st(pid).pop("progress", None)
+                self._save_state()
                 return {"ok": False, "error": f"解压后无文件(archive: {asset['name']})"}
             install_dir = self.opt_dir / pid / rel["version"]
             self._ensure_exec_bits(install_dir)
@@ -270,6 +346,7 @@ class ProgramManager:
                     self._log(pid, f"[install] {rel['version']} 解压完成但未找到启动入口(launcher/exe/sh)")
             if st.get("status") in ("not_installed", "installed", "stopped", "busy"):
                 st["status"] = "installed"
+            st.pop("progress", None)   # 进度收口: 完成(终态与日志已带结果)
             self._save_state()
             self._log(pid, f"[install] {asset['name']} → {st['install_dir']}")
             return {"ok": True, "version": rel["version"], "files": n,
@@ -281,6 +358,7 @@ class ProgramManager:
                         **self._docker_hint(pid)}
             cc = await self._compose_cmd()
             cf = self._compose_file(dd)
+            self._set_phase(pid, "pull", "拉取镜像中(docker 无字节级进度, 输出完成后记入日志)")
             if cc and cf:
                 code, out = await self._run_cmd(cc + ["-f", str(cf), "pull"], timeout_s=900)
                 how = f"{' '.join(cc)} -f {cf} pull"
@@ -291,6 +369,10 @@ class ProgramManager:
                 st["version"] = (dd.get("image", "").rsplit(":", 1)[-1] or "unknown")
                 if st.get("status") in ("not_installed", "installed", "stopped", "busy"):
                     st["status"] = "installed"
+                st.pop("progress", None)
+                self._save_state()
+            else:
+                st.pop("progress", None)
                 self._save_state()
             self._log(pid, f"[install] {how} → {'ok' if code == 0 else 'fail: ' + out[-120:]}")
             return {"ok": code == 0, "detail": out[-300:], "how": how}
@@ -329,7 +411,7 @@ class ProgramManager:
             res = await self.install(pid)     # 装新
             if res.get("ok") and was_running:
                 res["restarted"] = True
-                res["start_result"] = await self.start(pid)
+                res["start_result"] = await self.start(pid, force=True)
             if res.get("ok"):
                 self._log(pid, f"[update] → {chk['version']} 完成" +
                          ("(已自动重启)" if was_running else ""))
@@ -343,7 +425,7 @@ class ProgramManager:
             res = await self.install(pid)     # compose pull / docker pull
             if res.get("ok") and was_running:
                 res["restarted"] = True
-                res["start_result"] = await self.start(pid)   # compose up -d 会按新镜像重建
+                res["start_result"] = await self.start(pid, force=True)   # compose up -d 会按新镜像重建
             if res.get("ok"):
                 self._log(pid, "[update] 镜像已更新" + ("(容器已重建)" if was_running else ""))
                 await self._notify(pid)
@@ -351,7 +433,8 @@ class ProgramManager:
         return {"ok": False, "error": "该程序形态不支持更新(external/external自管请手动升级)"}
 
     # ---------- 启停 ----------
-    async def start(self, pid: str) -> dict:
+    async def start(self, pid: str, force: bool = False) -> dict:
+        """启动程序; force=True 供 update 自动拉起绕过「重复启动拒绝」(docker 重建场景)。"""
         d = self.def_(pid)
         if not d:
             return {"ok": False, "error": "unknown program"}
@@ -369,6 +452,13 @@ class ProgramManager:
                         **self._docker_hint(pid)}
             dd = d.get("docker") or {}
             name = dd.get("container_name", f"me-agent-{pid}")
+            # 重复启动明确拒绝(第 11 轮): 容器已在跑 → ok=False + running=True
+            # (force=True 供 update 的「拉新镜像后 compose up -d 重建」路径绕过)
+            if not force:
+                cstate = await self._docker_container_state(pid)
+                if cstate == "running":
+                    return {"ok": False, "running": True, "error": f"容器 {name} 已在运行, 重复启动被拒绝",
+                            "container": name}
             cc = await self._compose_cmd()
             cf = self._compose_file(dd)
             if cc and cf:
@@ -402,8 +492,17 @@ class ProgramManager:
         cmd = st.get("command") or (d.get("run") or {}).get("command")
         if not cmd:
             return {"ok": False, "error": "未配置启动命令(请先 install 探测 launcher, 或在 run.command 填写)"}
-        if pid in self._procs and self._procs[pid].returncode is None:
-            return {"ok": True, "note": "已在运行"}
+        # 重复启动明确拒绝(第 11 轮): 句柄活着或 pid 探测活着 → ok=False + running=True
+        # (旧口径 ok=True+note 不算「拒绝」, 前端无法锁定按钮; update 自动拉起传 force)
+        held = self._procs.get(pid)
+        if not force and held is not None and held.returncode is None:
+            return {"ok": False, "running": True, "pid": held.pid,
+                    "error": f"已在运行(pid={held.pid}), 重复启动被拒绝"}
+        if (not force and st.get("status") == "running"
+                and _pid_alive(st.get("pid"), st.get("started_at"))):
+            return {"ok": False, "running": True, "pid": st.get("pid"),
+                    "error": f"状态为运行中(pid={st.get('pid')}), 重复启动被拒绝; "
+                             f"若确认进程已死请先 stop 再 start"}
         logf = self.logs_dir / f"{pid}.log"
         logfh = logf.open("ab")
         # cwd 优先取安装目录(launcher 依赖相对路径调用同目录 node), 兼容旧命令形态
@@ -415,9 +514,23 @@ class ProgramManager:
         proc = await asyncio.create_subprocess_exec(
             *[str(c) for c in cmd], stdout=logfh, stderr=asyncio.subprocess.STDOUT, cwd=cwd)
         self._procs[pid] = proc
-        st.update(status="running", pid=proc.pid, started_at=time.time())
+        st.update(status="running", pid=proc.pid, started_at=time.time(), exit_code=None)
         self._save_state()
         self._log(pid, f"[start] pid={proc.pid} cmd={cmd} cwd={cwd}")
+        # 秒退探测(第 11 轮): spawn 后 1.5s 观察窗, 立即退出则带回 exit code 与日志尾部,
+        # 不再让用户面对「启动成功→10 秒后变已停止」的谜之回跳
+        await asyncio.sleep(1.5)
+        if proc.returncode is not None:
+            st.update(status="stopped", pid=None, exit_code=proc.returncode)
+            self._procs.pop(pid, None)
+            self._save_state()
+            tail = "\n".join(self.logs(pid, limit=8))
+            self._log(pid, f"[start] 进程 1.5s 内退出 exit={proc.returncode} —— 尾部日志:\n{tail}")
+            await self._notify(pid)
+            return {"ok": False, "error": f"进程启动后立即退出(exit={proc.returncode})",
+                    "exit_code": proc.returncode, "log_tail": tail,
+                    "hint": "查看日志尾部定位原因(常见: 依赖缺失/端口占用/配置错误/被杀软拦截)"}
+        self._scan_tokens(pid)   # 启动段可能已打出 WebUI 凭据
         await self._notify(pid)
         return {"ok": True, "pid": proc.pid}
 
@@ -521,6 +634,7 @@ class ProgramManager:
             self._busy.pop(pid, None)
             self._action_tasks.pop(pid, None)
             st["busy_action"] = None
+            st.pop("progress", None)   # 进度收口(异常路径兜底; 成功路径 install 内已收)
             if st.get("status") == "busy":   # 失败/异常时终态归位(成功路径 install/update 内部已写终态)
                 st["status"] = ("installed" if (st.get("install_dir") or st.get("version")
                                                or st.get("container")) else "stopped")
@@ -635,9 +749,10 @@ class ProgramManager:
                         "last_result": lr, "error_streak": streak}
         proc = self._procs.get(pid)
         if proc is not None and proc.returncode is None:
-            return {"type": "process", "status": "running"}
-        if st.get("pid") and _pid_alive(st["pid"]):
-            return {"type": "external", "status": "running", "detail": f"pid {st['pid']}(外部自管)"}
+            return {"type": "process", "status": "running", "detail": f"pid {proc.pid}(句柄持有)"}
+        if st.get("pid") and _pid_alive(st["pid"], st.get("started_at")):
+            how = "句柄丢失(服务重启), pid 探测在跑" if st.get("status") == "running" else "pid 在跑"
+            return {"type": "external", "status": "running", "detail": f"pid {st['pid']}({how})"}
         return {"type": "none", "status": "stopped"}
 
     def _proc_info(self, pid: str) -> dict:
@@ -645,18 +760,17 @@ class ProgramManager:
         proc_pid = st.get("pid")
         info = {"pid": proc_pid, "mem_mb": None, "cpu": None,
                 "uptime": None, "restarts": int(st.get("restarts", 0))}
+        # uptime 跨平台口径(第 11 轮): 一律由 started_at 推导, Windows 也有值
+        if st.get("started_at"):
+            info["uptime"] = _fmt_uptime(max(0, int(time.time() - float(st["started_at"]))))
         if not proc_pid or not _pid_alive(proc_pid):
             return info
         try:
             stat = Path(f"/proc/{proc_pid}/stat").read_text("utf-8")
             fields = stat.rsplit(")", 1)[1].split()
             utime, stime = int(fields[11]), int(fields[12])
-            started_at = int(fields[19])
             rss = int(Path(f"/proc/{proc_pid}/statm").read_text("utf-8").split()[1]) * 4096
             info["mem_mb"] = round(rss / 1048576, 1)
-            if st.get("started_at"):
-                up = max(0, int(time.time() - st["started_at"]))
-                info["uptime"] = _fmt_uptime(up)
             prev = self._cpu_prev.get(pid)
             now = time.time()
             self._cpu_prev[pid] = (utime, stime, now)
@@ -694,6 +808,8 @@ class ProgramManager:
                 "kind": d.get("kind", ""),
                 "status": status,
                 "busy_action": st.get("busy_action"),
+                "progress": st.get("progress"),        # 第 11 轮: 下载/拉取进度(busy 轮询)
+                "webui": self.webui_info(pid),          # 第 11 轮: SnowLuma 登录凭据(检测到时)
                 "last_action": st.get("last_action"),
                 "version": st.get("version") or "-",
                 "latest": st.get("latest") or "-",
@@ -734,6 +850,7 @@ class ProgramManager:
         return acts
 
     def logs(self, pid: str, limit: int = 80) -> list[str]:
+        """尾部 N 行(旧契约, V4 console 兼容); 全量/分页走 logs_page()。"""
         bufs = self._log_buffers.setdefault(pid, [])
         f = self.logs_dir / f"{pid}.log"
         if f.exists():
@@ -744,17 +861,133 @@ class ProgramManager:
             return lines
         return bufs[-limit:]
 
+    def logs_page(self, pid: str, offset: int | None = None, limit: int = 200) -> dict:
+        """日志分页读取(第 11 轮, 令 37 能翻到启动段拿 WebUI 凭据)。
+
+        - offset=None: 尾部语义(兼容旧调用) — 返回末尾 limit 行, offset 字段回真实起始行号;
+        - offset>=0: 行号分页 — lines[offset : offset+limit], has_more 标记是否还有下页;
+        - limit<=0: 从 offset(缺省 0)读到结尾(全量);
+        - 全部含 total 总行数。启动段(含 SnowLuma WebUI 凭据)从 offset=0 可全量翻阅。
+        """
+        bufs = self._log_buffers.setdefault(pid, [])
+        f = self.logs_dir / f"{pid}.log"
+        all_lines: list[str] = bufs
+        if f.exists():
+            try:
+                all_lines = f.read_text("utf-8", errors="replace").splitlines()
+            except Exception:
+                all_lines = bufs
+        total = len(all_lines)
+        if offset is None:   # 尾部语义
+            n = limit if limit and limit > 0 else total
+            lines = all_lines[-n:] if n < total else all_lines
+            off = max(0, total - n)
+        else:                # 行号分页语义
+            off = max(0, int(offset))
+            n = limit if limit and limit > 0 else max(0, total - off)
+            lines = all_lines[off: off + n]
+        return {"total": total, "offset": off, "limit": len(lines),
+                "lines": lines, "has_more": off + len(lines) < total}
+
     def _log(self, pid: str, line: str) -> None:
         ts = time.strftime("%H:%M:%S")
         f = self.logs_dir / f"{pid}.log"
         with f.open("a", encoding="utf-8") as fh:
             fh.write(f"[{ts}] {line}\n")
 
+    # ---------- WebUI 凭据提取(第 11 轮: 37 拿不到 SnowLuma 登录令牌) ----------
+    def _scan_tokens(self, pid: str) -> None:
+        """增量扫描程序日志, 按 config/programs.yaml 的 webui.{token,url}_pattern 提取凭据。
+
+        SnowLuma 真实输出(v2.2.0 核实):
+          <ts> INFO  [WebUI] initial credentials: user=admin password=<随机>
+          <ts> INFO  [WebUI] listening http://127.0.0.1:5099
+        命中 → st.webui_token/webui_user/webui_url(经 GET /programs 与 WS 暴露),
+        且检测到变化时推送 program.webui 事件。进程重启换新令牌会覆盖旧值。
+        """
+        d = self.def_(pid) or {}
+        w = d.get("webui") or {}
+        tok_pat, url_pat = w.get("token_pattern"), w.get("url_pattern")
+        if not (tok_pat or url_pat):
+            return
+        f = self.logs_dir / f"{pid}.log"
+        if not f.exists():
+            return
+        try:
+            data = f.read_bytes()
+            start = self._token_scan_off.get(pid, 0)
+            if start < 0 or start > len(data):   # 文件被轮转/重置 → 从头重扫
+                start = 0
+            new = data[start:].decode("utf-8", "replace")
+            self._token_scan_off[pid] = len(data)
+            st = self._st(pid)
+            changed = False
+            if tok_pat:
+                m = re.search(tok_pat, new)
+                if m:
+                    gd = m.groupdict()
+                    tok = gd.get("token") or (m.groups()[-1] if m.groups() else None)
+                    user = gd.get("user") or w.get("username") or ""
+                    if tok and st.get("webui_token") != tok:
+                        st["webui_token"] = tok
+                        st["webui_user"] = user
+                        changed = True
+                        self._log(pid, f"[webui] 检测到登录凭据(user={user}); "
+                                       f"已写入程序详情 webui 字段并推送 program.webui")
+            if url_pat:
+                m = re.search(url_pat, new)
+                if m and st.get("webui_url") != m.group(1):
+                    st["webui_url"] = m.group(1)
+                    changed = True
+            if changed:
+                self._save_state()
+                if self.bus:
+                    self.bus.emit("program.webui", {"id": pid, **self.webui_info(pid)})
+        except Exception:
+            pass
+
+    def webui_info(self, pid: str) -> dict:
+        """程序详情里的 webui 字段(令牌仅本机控制台可见, 端口勿暴露公网)。"""
+        st = self._st(pid)
+        tok = st.get("webui_token")
+        if not tok:
+            return {}
+        return {"token": tok, "user": st.get("webui_user") or "", "url": st.get("webui_url") or ""}
+
+    def _maybe_rotate_log(self, pid: str, max_bytes: int = 50 * 1024 * 1024,
+                          keep_bytes: int = 10 * 1024 * 1024) -> None:
+        """程序日志尺寸轮转: 超过 50MB 保留尾部 10MB(协议端长期运行防撑爆磁盘)。
+
+        轮转后行号语义变化, 同步重置该 pid 的令牌扫描偏移(下次从头重扫一次, 幂等)。
+        """
+        f = self.logs_dir / f"{pid}.log"
+        try:
+            if not f.exists() or f.stat().st_size <= max_bytes:
+                return
+            with f.open("rb") as fh:
+                fh.seek(-keep_bytes, 2)
+                tail = fh.read()
+            nl = tail.find(b"\n")
+            tail = tail[nl + 1:] if nl >= 0 else tail   # 对齐到整行
+            tmp = f.with_suffix(".log.tmp")
+            tmp.write_bytes(tail)
+            tmp.replace(f)
+            self._token_scan_off[pid] = 0
+            self._log(pid, f"[rotate] 日志超过 {max_bytes // 1048576}MB, 已保留尾部 "
+                           f"{len(tail) // 1048576}MB(全量翻阅从新文件行号 0 开始)")
+        except Exception:
+            pass
+
     async def _notify(self, pid: str) -> None:
         if self.bus:
             st = self._st(pid)
-            self.bus.emit("program.status", {"id": pid, "status": st.get("status"),
-                                             "pid": st.get("pid")})
+            evt = {"id": pid, "status": st.get("status"), "pid": st.get("pid")}
+            if st.get("progress"):
+                evt["progress"] = st["progress"]
+            w = self.webui_info(pid)
+            if w:
+                evt["webui"] = w
+            self.bus.emit("program.status", evt)
 
     # ---------- 监控循环 ----------
     async def start_monitor(self) -> None:
@@ -770,45 +1003,122 @@ class ProgramManager:
                 pass
             self._monitor_task = None
 
+    async def _probe_http_authoritative(self, pid: str, st: dict, h: dict) -> None:
+        """http 健康探测(权威口径, 供远程形态/非 docker http 程序)。
+
+        修正(第 11 轮): 只有「此前在跑」的程序才允许探测失败降级为 stopped;
+        installed/error 状态探测失败保持原状态(未启动≠已停止, 不再误翻)。
+        """
+        try:
+            resp = await self._client_ensure().get(h.get("url", ""), timeout=5.0)
+            self._health_cache[pid] = {"status": "running" if resp.status_code < 500 else "error",
+                                       "detail": f"HTTP {resp.status_code}"}
+        except Exception as e:
+            self._health_cache[pid] = {"status": "stopped", "detail": type(e).__name__}
+        cstat = self._health_cache[pid]["status"]
+        cur = st.get("status")
+        if cstat == "running" and cur != "running":
+            st["status"] = "running"    # 外部拉起 → 自动识别
+            self._save_state()
+            await self._notify(pid)
+        elif cstat != "running" and cur == "running":
+            st["status"] = "stopped"    # 在跑但探测失败 → 降级
+            self._save_state()
+            await self._notify(pid)
+
+    async def _docker_container_state(self, pid: str) -> str | None:
+        """容器真实状态(compose ps/inspect 口径): 'running'/'stopped'/None(探测不可用)。
+
+        docker inspect -f {{.State.Running}} <name>; 无 docker CLI/容器不存在/出错 → None,
+        None 表示「本探测无信号」(调用方应沿用其他口径, 如远程 http 探测)。
+        """
+        d = self.def_(pid) or {}
+        dd = d.get("docker") or {}
+        st = self._st(pid)
+        name = st.get("container") or dd.get("container_name", f"me-agent-{pid}")
+        if not shutil.which("docker"):
+            return None
+        code, out = await self._run_cmd(
+            ["docker", "inspect", "-f", "{{.State.Running}}", name], timeout_s=15)
+        if code == 0:
+            return "running" if out.strip().lower() == "true" else "stopped"
+        return None
+
     async def _monitor_loop(self) -> None:
         while True:
             try:
                 for d in self.defs:
-                    pid = d["id"]
-                    st = self._st(pid)
-                    h = (d.get("run") or {}).get("health") or {}
-                    if (h.get("type") == "http" and st.get("status") != "not_installed"
-                            and not st.get("busy_action")):   # busy(拉镜像等)期间不做健康探测
-                        try:
-                            resp = await self._client_ensure().get(h.get("url", ""), timeout=5.0)
-                            self._health_cache[pid] = {"status": "running" if resp.status_code < 500 else "error",
-                                                       "detail": f"HTTP {resp.status_code}"}
-                        except Exception as e:
-                            self._health_cache[pid] = {"status": "stopped", "detail": type(e).__name__}
-                        if self._health_cache[pid]["status"] != st.get("status"):
-                            st["status"] = self._health_cache[pid]["status"]
-                            self._save_state()
-                            await self._notify(pid)
-                    proc = self._procs.get(pid)
-                    if proc is not None and proc.returncode is not None and st.get("status") == "running":
-                        st["status"] = "stopped"
-                        st["pid"] = None
-                        st["exit_code"] = proc.returncode
-                        self._log(pid, f"[monitor] 进程退出 code={proc.returncode}")
-                        self._procs.pop(pid, None)
-                        self._save_state()
-                        await self._notify(pid)
-                    elif st.get("pid") and st.get("status") == "running" and not _pid_alive(st["pid"]):
-                        st["status"] = "stopped"
-                        st["pid"] = None
-                        self._log(pid, "[monitor] 外部进程消失")
-                        self._save_state()
-                        await self._notify(pid)
+                    await self._monitor_once(d)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 pass
             await asyncio.sleep(10)
+
+    async def _monitor_once(self, d: dict) -> None:
+        """单个程序的一轮监控(容器/进程探测 + 令牌扫描 + 轮转); 供测试直接驱动。"""
+        try:
+            pid = d["id"]
+            st = self._st(pid)
+            h = (d.get("run") or {}).get("health") or {}
+            # ---------- docker 形态: 容器真实状态为准(inspect 口径, 第 11 轮) ----------
+            # http 探测只补 detail(容器在跑而 REST 未就绪是「启动中」不是「停止」);
+            # 本机无 docker(inspect 不可用)时沿用 http 权威口径(远程部署形态)。
+            if (d.get("kind") == "docker" and st.get("status") != "not_installed"
+                    and not st.get("busy_action")):
+                cstate = await self._docker_container_state(pid)
+                if cstate is not None:
+                    detail = "容器运行中"
+                    if h.get("type") == "http":
+                        try:
+                            resp = await self._client_ensure().get(h.get("url", ""), timeout=5.0)
+                            detail = (f"容器运行中; REST API HTTP {resp.status_code}"
+                                      if resp.status_code < 500
+                                      else f"容器运行中; REST API 异常 HTTP {resp.status_code}")
+                        except Exception as e:
+                            detail = f"容器运行中; REST API 未就绪({type(e).__name__})"
+                    self._health_cache[pid] = {"status": cstate, "detail": detail}
+                    if st.get("status") != cstate:
+                        st["status"] = cstate
+                        self._log(pid, f"[monitor] 容器状态 → {cstate}({detail})")
+                        self._save_state()
+                        await self._notify(pid)
+                elif h.get("type") == "http":   # inspect 不可用 → http 兜底(远程形态)
+                    await self._probe_http_authoritative(pid, st, h)
+            # ---------- 非 docker 的 http 健康探测(仅 running 可降级, 不误伤 installed) ----------
+            elif (h.get("type") == "http" and st.get("status") != "not_installed"
+                    and not st.get("busy_action")):   # busy(拉镜像等)期间不做健康探测
+                await self._probe_http_authoritative(pid, st, h)
+            # ---------- spawn 进程: 句柄优先, pid 探测兜底(第 11 轮修状态失真) ----------
+            # 37 实机反馈根因: Windows 无 /proc, 旧探测恒判死 → 10 秒内 running 被
+            # 误翻 stopped。现句柄 poll 恒准且优先; 句柄丢失(服务重启)才退到
+            # 平台感知 pid 探测(OpenProcess/tasklist, 见 _pid_alive)。
+            proc = self._procs.get(pid)
+            if proc is not None and proc.returncode is not None and st.get("status") == "running":
+                st["status"] = "stopped"
+                st["pid"] = None
+                st["exit_code"] = proc.returncode
+                self._log(pid, f"[monitor] 进程退出 code={proc.returncode}(stderr 已随 stdout 落日志)")
+                self._procs.pop(pid, None)
+                self._save_state()
+                await self._notify(pid)
+            elif proc is not None and proc.returncode is None:
+                pass   # 句柄活着: 不做 pid 兜底探测(探测失真不再误杀 running)
+            elif st.get("pid") and st.get("status") == "running" and not _pid_alive(st["pid"]):
+                st["status"] = "stopped"
+                st["exit_code"] = None
+                st["pid"] = None
+                self._log(pid, "[monitor] 外部进程消失(pid 探测失效)")
+                self._save_state()
+                await self._notify(pid)
+            # ---------- 令牌扫描 + 日志尺寸轮转(轻量, 只处理增量字节) ----------
+            if st.get("status") == "running":
+                self._scan_tokens(pid)
+            self._maybe_rotate_log(pid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     # ---------- internal 形态 ----------
     async def autostart(self) -> dict:
@@ -823,7 +1133,9 @@ class ProgramManager:
     def _internal_start(self, pid: str) -> dict:
         if pid == "obsidian_sync" and self.obsidian is not None:
             if pid in self._internal_tasks and not self._internal_tasks[pid].done():
-                return {"ok": True, "note": "已在运行"}
+                # 重复启动明确拒绝(第 11 轮, 口径与 binary/docker 一致; autostart 幂等无害)
+                return {"ok": False, "running": True, "error": "内部同步循环已在运行, 重复启动被拒绝",
+                        "note": "已在运行"}
             self._internal_tasks[pid] = asyncio.create_task(self._obsidian_loop(pid))
             self._st(pid).update(status="running", started_at=time.time())
             self._save_state()
@@ -911,11 +1223,102 @@ class ProgramManager:
 
 
 # ---------- 工具函数 ----------
-def _pid_alive(pid: int | None) -> bool:
+_IS_WIN = sys.platform == "win32"
+
+
+def _win_openproc_alive(pid: int, started_at: float | None = None) -> bool | None:
+    """Windows ctypes 探测: OpenProcess + GetExitCodeProcess(微秒级, 无子进程)。
+
+    返回 True/False/None(None=ctypes 探测不可用, 调用方走 tasklist 兜底)。
+    pid 重用防护: 进程创建时间早于 started_at - 120s → 视为 pid 被复用 → 判死。
+    """
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32   # 非 Windows 会 AttributeError → None
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            return None   # 拒绝访问/句柄失败: 有权限不确定性, 交 tasklist 兜底
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return None
+            if code.value != STILL_ACTIVE:
+                return False
+            # STILL_ACTIVE: 再比对创建时间排除 pid 复用(尽力而为, 失败不拦判定)
+            try:
+                creation = ctypes.c_ulonglong()
+                _exit = ctypes.c_ulonglong()
+                _kern = ctypes.c_ulonglong()
+                _user = ctypes.c_ulonglong()
+                if (kernel32.GetProcessTimes(h, ctypes.byref(creation), ctypes.byref(_exit),
+                                             ctypes.byref(_kern), ctypes.byref(_user))
+                        and creation.value and started_at):
+                    created_epoch = creation.value / 1e7 - 11644473600.0   # FILETIME(100ns) → epoch s
+                    if created_epoch < float(started_at) - 120:
+                        return False   # 进程创建早于记录的启动 → pid 被复用
+            except Exception:
+                pass
+            return True
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def _tasklist_has(pid: int) -> bool | None:
+    """Windows tasklist 兜底探测(OpenProcess 不可用/被拒时)。
+
+    返回 True/False/None(None=tasklist 也不可用)。编码按系统 locale(mbcs/GBK),
+    只判断输出中是否含该 PID 且非「INFO: 没有任务」提示行。
+    """
+    try:
+        import subprocess
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"],
+                           capture_output=True, timeout=10, text=True,
+                           encoding="mbcs", errors="replace")
+        out = r.stdout or ""
+        if "INFO:" in out or "信息:" in out:
+            return False
+        return f'"{int(pid)}"' in out
+    except Exception:
+        return None
+
+
+def _pid_alive(pid: int | None, started_at: float | None = None) -> bool:
+    """平台感知的进程存活探测(第 11 轮修「Windows 恒判死」根因)。
+
+    - POSIX: /proc 存在则查 /proc(Linux); 无 /proc(macOS/BSD)退 os.kill(pid, 0);
+    - Windows: ctypes OpenProcess(快, started_at 参与 pid 复用防护) → tasklist 兜底;
+    - 全部探测手段异常时返回 False(仅剩句柄/容器口径兜底, 见 monitor/_load_state)。
+    """
     if not pid:
         return False
     try:
-        return Path(f"/proc/{pid}").exists()
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        if _IS_WIN:
+            r = _win_openproc_alive(pid, started_at)
+            if r is not None:
+                return r
+            r = _tasklist_has(pid)
+            return bool(r) if r is not None else False
+        if Path("/proc").is_dir():
+            return Path(f"/proc/{pid}").exists()
+        try:
+            os.kill(pid, 0)   # macOS/BSD: 无 /proc 的 POSIX 探测
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True    # 存在但非本用户进程
+        except OSError:
+            return False
     except Exception:
         return False
 

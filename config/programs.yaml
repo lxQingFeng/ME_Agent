@@ -50,6 +50,12 @@ programs:
       asset_pattern: "win-x64\\.zip$"              # Windows(默认兜底)
       asset_pattern_linux: "linux-x64\\.tar\\.gz$" # Linux(沙箱/联调)
       asset_pattern_darwin: "macOS|darwin"         # 该仓暂无 mac 资产 → 走「无匹配资产」明确报错路径
+    webui:                                          # 第 11 轮: 从启动输出提取 WebUI 登录凭据
+      # 真实输出(v2.2.0 核实): <ts> INFO [WebUI] initial credentials: user=admin password=<随机>
+      # 检测到 → 程序详情 webui:{token,user,url} 字段 + WS program.webui 推送(前端高亮一键复制)
+      token_pattern: 'initial credentials:\s*user=(?P<user>\S+)\s+password=(?P<token>\S+)'
+      # <ts> INFO [WebUI] listening http://127.0.0.1:5099(端口可被 SNOWLUMA_WEBUI_PORT 覆盖)
+      url_pattern: 'listening\s+(https?://\S+)'
     run:
       command: null       # install 后自动探测(launcher.bat / launcher.sh)
       health: {type: ws_event, interval_s: 30}

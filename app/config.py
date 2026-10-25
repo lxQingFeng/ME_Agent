@@ -36,7 +36,9 @@ class Settings:
         self.reload()
 
     def reload(self) -> None:
-        self.persona = _yaml("persona.yaml")
+        # 第 11 轮: persona/llm 支持 state/settings/ 覆盖层(控制台设置 API 保存处,
+        # git 不追踪 → 密钥不入库), 键级覆盖 config/ 默认值
+        self.persona = self._merged("persona.yaml")
         self.routine = _yaml("routine.yaml")
         self.activities_cfg = _yaml("activities.yaml")
         self.locations_cfg = _yaml("locations.yaml")
@@ -44,10 +46,23 @@ class Settings:
         self.channels = _yaml("channels.yaml")
         self.memory = _yaml("memory.yaml")
         self.shaping = _yaml("shaping.yaml")
-        self.llm_cfg = _yaml("llm.yaml")
+        self.llm_cfg = self._merged("llm.yaml")
         self.tts_cfg = _yaml("tts.yaml")
         self.programs_cfg = _yaml("programs.yaml")
         self.console = _yaml("console.yaml")
+
+    def _merged(self, name: str) -> dict:
+        """config/<name>(仓库默认) 与 state/settings/<name>(控制台保存值) 浅合并。"""
+        base = dict(_yaml(name))
+        overlay_path = self.state_dir / "settings" / name
+        if overlay_path.exists():
+            try:
+                overlay = yaml.safe_load(overlay_path.read_text("utf-8")) or {}
+                if isinstance(overlay, dict):
+                    base.update(overlay)
+            except Exception:
+                pass
+        return base
 
     def env(self, name: str, default: str = "") -> str:
         return os.environ.get(name, default)
@@ -100,6 +115,11 @@ class Settings:
         return self.env(self.console.get("internal_token_env", "ME_INTERNAL_TOKEN"))
 
     def llm_api_key(self) -> str:
+        # 第 11 轮: 控制台保存的明文 key(state/settings/llm.yaml 的 llm_cfg["api_key"])
+        # 优先于环境变量(用户显式保存即意图覆盖); 空串视为未设置
+        direct = str(self.llm_cfg.get("api_key", "") or "").strip()
+        if direct:
+            return direct
         return self.env(self.llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY"))
 
     def llm_enabled(self) -> bool:
