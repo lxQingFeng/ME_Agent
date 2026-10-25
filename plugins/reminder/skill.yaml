@@ -1,0 +1,15 @@
+name: reminder
+version: 1.0.0
+type: active
+description: 提醒事项(存本地, 到点播报)
+tool:
+  function: set_reminder
+  description: 设一个提醒, N 分钟后提醒某事
+  parameters:
+    minutes: {type: integer, description: 几分钟后提醒, 1-1440, required: true}
+    content: {type: string, description: 提醒内容, required: true}
+  timeout_s: 5
+permissions: []
+active:
+  every_minutes: 5
+  condition: "due_tasks > 0"

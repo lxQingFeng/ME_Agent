@@ -1,0 +1,20 @@
+# 位置图:CoherenceGuard R4 依赖(换位置必须满足通行时间)
+nodes: [家/床, 家/卧室, 家/浴室, 家/书桌, 家/沙发, 家/客厅, 家/厨房, 楼下公园, 滨河步道, 咖啡馆, 超市, 公司, 地铁]
+edges:
+  - {a: 家/床, b: 家/卧室, minutes: 1}
+  - {a: 家/卧室, b: 家/浴室, minutes: 2}
+  - {a: 家/浴室, b: 家/客厅, minutes: 2}
+  - {a: 家/客厅, b: 家/沙发, minutes: 1}
+  - {a: 家/客厅, b: 家/厨房, minutes: 2}
+  - {a: 家/客厅, b: 家/书桌, minutes: 1}
+  - {a: 家/书桌, b: 家/沙发, minutes: 2}
+  - {a: 家/客厅, b: 楼下公园, minutes: 10}
+  - {a: 楼下公园, b: 滨河步道, minutes: 12}
+  - {a: 楼下公园, b: 超市, minutes: 8}
+  - {a: 楼下公园, b: 咖啡馆, minutes: 22}
+  - {a: 家/客厅, b: 公司, minutes: 40}
+  - {a: 公司, b: 地铁, minutes: 10}
+  - {a: 家/客厅, b: 地铁, minutes: 30}
+  - {a: 地铁, b: 滨河步道, minutes: 20}
+  - {a: 超市, b: 滨河步道, minutes: 15}
+default_travel_minutes: 30   # 未知两位置间默认通行时间(保守)

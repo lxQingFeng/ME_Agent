@@ -1,0 +1,11 @@
+name: dice
+version: 1.0.0
+type: passive
+description: 掷骰子(d N 形式)
+tool:
+  function: roll_dice
+  description: 掷骰子, 如 2d6 表示两个六面骰
+  parameters:
+    expr: {type: string, description: "骰子表达式, 如 2d6 / 1d100", required: true}
+  timeout_s: 5
+permissions: []

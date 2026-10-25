@@ -1,0 +1,14 @@
+# 拟人整形输出器(方案 §6)
+typing_delay_ms: [500, 2500]     # 每条消息前的"打字"延迟随机区间
+inter_message_gap_ms: [1000, 3000]   # 拆条后的间隔
+split_threshold: 120             # 超过此长度拆条
+max_parts: 3
+group_rate_per_min: 8            # 群内发送令牌桶
+dedup_window_minutes: 3          # 同题去重窗口
+broadcast:
+  daily_max: 8
+  hourly_max: 2
+  min_gap_minutes: 25
+  silence: ["00:00-08:00"]       # 广播静默时段(睡觉时反正不发)
+session:
+  history_window_turns: 12       # 上下文窗口(往返数)

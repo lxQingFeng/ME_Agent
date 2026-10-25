@@ -1,0 +1,12 @@
+name: voice
+version: 1.0.0
+type: passive
+description: 语音消息(TTS 桥接):把要说的话变成语音发出去
+tool:
+  function: speak
+  description: 用语音说一句话(TTS 合成后以语音消息发送);需要发语音/念东西/唱歌类请求时调用
+  parameters:
+    text: {type: string, description: 要说的话(口语化), required: true}
+    voice: {type: string, description: 音色(可选, 留空用默认), required: false}
+  timeout_s: 60
+permissions: [net:internal]

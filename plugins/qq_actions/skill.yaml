@@ -1,0 +1,10 @@
+name: qq_actions
+version: 1.0.0
+type: passive
+description: QQ 联动动作(戳回去等)
+tool:
+  function: poke_back
+  description: 戳一戳回去(在被戳时/想戳发送者时用)
+  parameters: {}
+  timeout_s: 5
+permissions: []

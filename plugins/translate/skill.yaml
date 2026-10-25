@@ -1,0 +1,12 @@
+name: translate
+version: 1.0.0
+type: passive
+description: 翻译(经控制台 LLM 通道)
+tool:
+  function: translate
+  description: 翻译文本(自动识别语种, 默认译成中文)
+  parameters:
+    text: {type: string, description: 要翻译的文本, required: true}
+    to: {type: string, description: 目标语种, 默认中文, required: false}
+  timeout_s: 30
+permissions: [net:internal]

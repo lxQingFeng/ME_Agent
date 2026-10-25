@@ -1,0 +1,27 @@
+# TTS 桥接(三类模型形态, 完整配置经控制台 API 管理, 落盘于 state/tts/)
+default_provider_id: ""
+providers: []     # 占位; 运行时由 ProviderStore 管理(state/tts/providers/<id>/meta.json)
+# 新建 text_prompt 形态 provider 时的默认模板(占位符: {{api_key}} {{model}} {{text}} {{voice}} {{speed}} {{format}})
+default_text_prompt:
+  endpoint: https://api.xiaomimimo.com/v1/chat/completions
+  request_header: |
+    Authorization: Bearer {{api_key}}
+    Content-Type: application/json
+  request_body: |
+    {
+      "model": "{{model}}",
+      "messages": [
+        {"role": "user", "content": "自然、亲切的口语语气，语速适中。"},
+        {"role": "assistant", "content": "{{text}}"}
+      ],
+      "audio": {"format": "{{format}}", "voice": "{{voice}}"},
+      "stream": false
+    }
+default_preset_voices:           # 预设音色(OpenAI 标准音色 + 中文名, 供 4.2 模块)
+  - {value: alloy,   label: 女声·沉稳流畅}
+  - {value: echo,    label: 男声·温和沉稳}
+  - {value: fable,   label: 男声·生动讲叙}
+  - {value: onyx,    label: 男声·低沉浑厚}
+  - {value: nova,    label: 女声·清亮友善}
+  - {value: shimmer, label: 女声·柔和明亮}
+sample_text: 你好,这是音色试听。今天天气不错,出来走走吗?

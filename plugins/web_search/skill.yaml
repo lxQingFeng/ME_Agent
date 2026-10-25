@@ -1,0 +1,11 @@
+name: web_search
+version: 1.0.0
+type: passive
+description: 网页搜索(SearXNG 自托管实例)
+tool:
+  function: web_search
+  description: 搜索网页, 返回前几条标题与摘要
+  parameters:
+    query: {type: string, description: 搜索关键词, required: true}
+  timeout_s: 15
+permissions: [net:searxng]

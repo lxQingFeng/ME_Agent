@@ -1,0 +1,13 @@
+# SnowLuma ⇄ OneBot v11 反向 WS 通道
+onebot:
+  listen_host: 0.0.0.0
+  listen_port: 8000            # 控制台统一端口: REST + /onebot(WS) + /api/ws(WS)
+  ws_path: /onebot
+  access_token_env: ONEBOT_ACCESS_TOKEN   # SnowLuma 侧配同一个 token
+  self_qq: ""                  # 留空则从首次连接的 lifecycle 事件自动学习
+  group_whitelist: []          # 空列表=不限制(单群自用模式)
+  admin_qq: []                 # 管理员 QQ(可触发管理指令)
+  emergency_words: [急, 救, 出事, 帮忙, 快]
+  heartbeat_timeout_s: 120     # 超过判失联
+qq:
+  nickname_source: card    # 群名片优先

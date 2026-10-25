@@ -1,0 +1,50 @@
+# 状态动力学:能量的自变量(方案 §2.5)
+baseline:
+  valence: 0.2      # 情绪效价基线(-1..1)
+  arousal: 0.1      # 情绪唤醒基线(0..1)
+  social_battery: 60
+  energy: 100
+  stress: 5
+  hunger: 0         # 0-100, 随时间上升, 正餐清零
+drain_per_tick:     # 每档每 5min tick 的能量净变化(消耗)
+  none: 0.05
+  light: 0.25
+  medium: 0.5
+  high: 0.9
+  extreme: 1.6
+recharge_per_tick:  # 静息类活动的回充(叠加在 drain 之上, 按活动 id)
+  rest: 0.85
+  nap: 1.2
+  tea_break: 0.35
+  snack: 0.35
+  light_scroll: 0.12
+  scrolling: 0.12
+  wake_groggy: 0.3
+  skincare: 0.1
+  wash: 0.1
+  dressing: 0.05
+  chat_online: 0.15
+  music: 0.15
+  reading: 0.1
+sleep_recharge_per_tick: 1.05   # 睡觉回充(8h ≈ 100)
+stress_extra_factor: 0.003       # 压力附加消耗 = stress(0-100) * 此系数(每 tick)
+mood_regression_per_tick: 0.03  # 情绪向基线回归
+social:
+  per_message_cost: 0.25        # 每条群消息微耗
+  reply_cost: 0.8               # 每次回复耗
+  alone_recharge_per_tick: 0.8  # 独处回充
+hunger:
+  rise_per_tick: 0.45
+  meal_reset: 5                 # 正餐后残值
+  threshold: 55                 # 过线产生想吃东西的 want
+coffee:
+  energy_boost: 18
+  stress_add: 3
+  daily_max: 3
+gates:
+  high_activity_min_energy: 15  # 强度>=medium 的活动进入门槛
+  force_rest_energy: 8          # 低于则只允许 none/light 活动
+  force_sleep_energy: 3         # 低于且在夜里 → 强制 sleep 路径
+wants:
+  max_active: 3
+  decay_hours: 24

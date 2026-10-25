@@ -1,0 +1,59 @@
+# 第三方开源程序注册表(程序管理器) —— source 可被 API 覆盖
+programs:
+  - id: hindsight
+    name: Hindsight 记忆引擎
+    kind: docker
+    tag: 记忆系统          # 首选 docker 形态;无 docker 时可退 binary
+    description: 长期记忆(MIT, PostgreSQL+pgvector, MCP 内置, fs mount 投影)
+    homepage: https://github.com/vectorize-io/hindsight
+    source:
+      type: github_release
+      repo: vectorize-io/hindsight
+      asset_pattern: "linux.*tar|\\.tar\\.gz$|\\.zip$"
+      version: latest
+    docker:
+      image: hindsight/hindsight:latest     # 示例: 以官方 README 镜像名为准
+      container_name: me-agent-hindsight
+      ports: ["8888:8888"]
+      volumes: ["hindsight-data:/data"]
+    run:                  # binary 退路(安装后生成 run.json 可改)
+      command: null       # 安装时探测生成
+      health: {type: http, url: http://127.0.0.1:8888/health, interval_s: 30}
+    integrate: create_banks   # 一键接入: 建 qq-agent/knowledge 两 bank + 写 memory.yaml
+  - id: snowluma
+    name: SnowLuma(OneBot v11 协议端)
+    kind: binary          # Windows 桌面形态(launcher.bat); 服务器侧可用 Docker.Framework
+    description: NTQQ hook 系协议端, 反向 WS 出站(源码可见非商业许可, 自用合法, 严禁再分发)
+    homepage: https://github.com/SnowLuma/SnowLuma
+    source:
+      type: github_release
+      repo: SnowLuma/SnowLuma
+      asset_pattern: "\\.zip$"
+      version: latest
+    run:
+      command: null       # Windows 侧由用户手动启动(launcher.bat); 服务器形态填 docker 命令
+      health: {type: ws_event, interval_s: 30}   # 以 /onebot 连接与心跳判定
+    integrate: write_onebot_config  # 一键接入: 生成 channels.yaml 对接参数 + 安装指引
+  - id: napcat
+    name: NapCat(备选协议端)
+    kind: docker
+    tag: QQ 通道·备
+    description: 备用 OneBot v11 协议端(方案三中的 B 通道)
+    homepage: https://github.com/NapNeko/NapCatQQ
+    source: {type: github_release, repo: NapNeko/NapCat, asset_pattern: "\\.zip$", version: latest}
+    docker:
+      image: mlikiowa/napcat-docker:latest
+      container_name: me-agent-napcat
+      ports: ["6099:6099"]
+      volumes: ["napcat-config:/app/napcat/config"]
+    run: {command: null, health: {type: ws_event, interval_s: 30}}
+    integrate: write_onebot_config
+  - id: obsidian_sync
+    name: Obsidian 同步器
+    kind: internal
+    tag: 人类可审计
+    description: 每日 00:10 导出 WorldState 快照 + 记忆 vault git commit, knowledge 单向注入; 人类可直接翻阅 Agent 大脑。
+    run:
+      command: null
+      health: {type: internal, interval_s: 30}
+    integrate: open_vault

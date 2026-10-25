@@ -1,0 +1,8 @@
+# LLM(OpenAI 兼容, DeepSeek 级即可)
+base_url: https://api.deepseek.com/v1
+api_key_env: DEEPSEEK_API_KEY
+chat_model: deepseek-chat
+planner_model: deepseek-chat
+temperature: 0.7
+max_tool_rounds: 2
+timeout_s: 30

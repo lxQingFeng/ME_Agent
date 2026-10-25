@@ -1,0 +1,10 @@
+# 中央控制台
+host: 0.0.0.0
+port: 8000
+internal_token_env: ME_INTERNAL_TOKEN    # 插件沙箱回连控制台的令牌
+state_dir: state
+vault_dir: vault
+log_level: INFO
+engine:
+  tick_seconds: 300       # 世界心跳节拍(5min); 测试用虚拟时钟另行注入
+  auto_start: true
