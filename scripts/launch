@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# ME_Agent 一键启动(拉起全系统: 心跳引擎+仲裁器+OneBot 网关+记忆+API)
+# 用法: ./scripts/launch [--port 8000] [--tick-seconds 300] [--no-engine]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PY="${PYTHON:-python3}"
+if [ -x ".venv/bin/python" ]; then PY=".venv/bin/python"; fi
+exec "$PY" -m app "$@"

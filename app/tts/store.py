@@ -94,7 +94,10 @@ class ProviderStore:
         if not p.exists():
             return None
         # newline='': 不做任何换行翻译; encoding 声明 utf-8
-        return p.read_text("utf-8", newline="")
+        # 注: Path.read_text 的 newline 参数是 Python 3.13 才加入的,
+        #     运行环境为 3.12, 必须用显式 open() 以保持字节保真语义不变。
+        with open(p, "r", encoding="utf-8", newline="") as f:
+            return f.read()
 
     def write_raw(self, pid: str, which: str, content: str) -> dict:
         """按原文直写(不做 trim/规范化)。返回校验信息。"""
