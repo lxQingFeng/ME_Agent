@@ -1,0 +1,24 @@
+{
+  "name": "qq-agent-desktop",
+  "productName": "QQAgentDesktop",
+  "version": "0.2.0",
+  "description": "QQ Agent 桌面壳（Electron）：ME_Agent 仓库 desktop/ 子目录形态 · 仓库根自动推导 · 原生窗口加载控制台 · 托盘常驻 · 后端生命周期（探测/拉起/附加）· 演示模式引用仓库 console/",
+  "main": "main.js",
+  "author": "ME Agent · 设计匠人",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "smoke:demo": "electron . --smoke --mode=demo",
+    "smoke:live": "electron . --smoke --mode=live",
+    "test:backend": "node test/test-backend-manager.js",
+    "icon": "node scripts/gen-icon.js",
+    "sync-console": "node scripts/sync-console.js",
+    "package-win": "electron-packager . QQAgentDesktop --platform=win32 --arch=x64 --out=dist --overwrite --ignore=\"(^|/)node_modules($|/)|(^|/)dist($|/)|(^|/)\\.git($|/)\"",
+    "package-linux": "electron-packager . QQAgentDesktop --platform=linux --arch=x64 --out=dist --overwrite --ignore=\"(^|/)node_modules($|/)|(^|/)dist($|/)|(^|/)\\.git($|/)\""
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-packager": "^17.1.2"
+  }
+}

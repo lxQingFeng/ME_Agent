@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QQ Agent 桌面壳 · 仓库与后端配置</title>
+<style>
+  :root {
+    --bg: #0B1120; --card: #131E36; --border: #27334F; --border-strong: #3A4A6E;
+    --text: #F1F5F9; --dim: #9CA9BE; --faint: #5D6B84;
+    --accent: #22C55E; --accent-soft: rgba(34, 197, 94, 0.14);
+    --amber: #F5A524; --red: #F0505C; --blue: #38BDF8;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .panel { width: 620px; max-width: 96vw; background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 28px 30px; box-shadow: 0 18px 48px rgba(0,0,0,.4); }
+  h1 { font-size: 19px; display: flex; align-items: center; gap: 10px; }
+  h1 .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px rgba(34,197,94,.7); flex-shrink: 0; }
+  .sub { color: var(--dim); font-size: 13px; line-height: 1.7; margin-top: 8px; }
+  .field { margin-top: 18px; }
+  .field label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .field label .req { color: var(--red); }
+  .field input { width: 100%; background: #0A101F; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px; font-family: Consolas, monospace; outline: none; }
+  .field input:focus { border-color: var(--accent); }
+  .help { font-size: 12px; color: var(--faint); margin-top: 6px; line-height: 1.6; }
+  .help code { color: var(--blue); font-size: 11.5px; }
+  details { margin-top: 14px; }
+  details summary { font-size: 12.5px; color: var(--dim); cursor: pointer; user-select: none; }
+  details .help { margin-top: 8px; }
+  .row { display: flex; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
+  button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #052e16; font-weight: 700; }
+  button.ghost { background: transparent; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .6; cursor: wait; }
+  #msg { margin-top: 16px; font-size: 12.5px; line-height: 1.7; border-radius: 8px; padding: 10px 12px; display: none; white-space: pre-wrap; }
+  #msg.err { display: block; background: rgba(240,80,92,.12); border: 1px solid rgba(240,80,92,.4); color: #ffb3b9; }
+  #msg.okk { display: block; background: var(--accent-soft); border: 1px solid rgba(34,197,94,.4); color: #b8f0cd; }
+  .steps { counter-reset: s; margin-top: 10px; }
+  .steps li { list-style: none; font-size: 12.5px; color: var(--dim); margin-top: 8px; line-height: 1.7; padding-left: 26px; position: relative; }
+  .steps li::before { counter-increment: s; content: counter(s); position: absolute; left: 0; top: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--border); color: var(--dim); font-size: 11px; display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1><span class="dot"></span>QQ Agent 桌面壳 · 仓库与后端配置</h1>
+  <div class="sub">填一次 ME_Agent 仓库位置，壳会在后端未运行时自动拉起、已运行时直接附加。配置写入 <code>config.local.json</code>，之后每次启动无需再填。<b>壳位于 ME_Agent 仓库 <code>desktop/</code> 子目录时通常不会弹出本窗</b>——启动时自动识别上级为仓库根（检测 <code>.venv</code> / <code>app/</code> 等特征），仅在识别失败或需要手动覆盖时出现（托盘菜单「仓库与后端配置…」可随时打开）。</div>
+
+  <div class="field">
+    <label>ME_Agent 仓库根目录 <span class="req">*</span></label>
+    <input id="repoDir" placeholder="D:\ME_Agent" spellcheck="false">
+    <div class="help">仓库根 = 含 <code>app/</code>、<code>deploy/scripts/</code> 的目录。壳将执行
+      <code>.venv\Scripts\python.exe -m app --host 127.0.0.1</code>（工作目录 = 仓库根，契约 §一）。已自动识别时此处会预填，直接点「保存并拉起后端」即可。</div>
+  </div>
+
+  <details>
+    <summary>高级：后端地址（默认本机 8000，通常不用改）</summary>
+    <div class="field">
+      <label>backendUrl</label>
+      <input id="backendUrl" value="http://127.0.0.1:8000" spellcheck="false">
+      <div class="help">控制台 Live 页面将直接加载 <code>{backendUrl}/console/index.html</code>（随仓库更新，契约 §二）。</div>
+    </div>
+  </details>
+
+  <div class="help" style="margin-top:16px">还没做过首次部署？先双击仓库里的 <code>deploy\scripts\启动ME_Agent.bat</code>（自动建 .venv 装依赖），跑通一次后回来填路径即可。检测不到 <code>.venv</code> 时保存会给出指引。本窗从托盘打开即为手动覆盖入口（写入 <code>config.local.json</code>，恒优先于自动识别）。</div>
+
+  <div class="row">
+    <button class="primary" id="save">保存并拉起后端</button>
+    <button class="ghost" id="demo">先进入演示模式（Mock）</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const msg = $("#msg");
+const params = new URLSearchParams(location.search);
+if (params.get("repo")) $("#repoDir").value = params.get("repo");
+
+function show(kind, text) { msg.className = kind; msg.textContent = text; }
+
+$("#save").addEventListener("click", async () => {
+  const btn = $("#save");
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "探测/拉起中…（首次最长 60s）";
+  show("okk", "正在校验仓库并拉起后端…");
+  try {
+    const res = await window.desktop.setup.save({ repoDir: $("#repoDir").value, backendUrl: $("#backendUrl").value });
+    if (res && res.ok) show("okk", "配置已保存，后端已就绪（" + (res.mode === "spawned" ? "本壳拉起" : "附加现有实例") + "）——主窗口即将进入 Live 模式。");
+    else show("err", "未就绪：" + (res && res.message || "未知错误") + ((res && res.hint) ? "\n提示：" + res.hint : "") + ((res && res.tail && res.tail.length) ? "\n后端输出尾部：\n" + res.tail.join("\n") : ""));
+  } catch (e) {
+    show("err", "调用失败：" + (e && e.message));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+});
+
+$("#demo").addEventListener("click", () => { window.desktop.setup.demo(); });
+</script>
+</body>
+</html>

@@ -24,6 +24,7 @@ L4  Obsidian        单向双通道导出（人类可读的记忆档案）
 | `plugins/` | 插件技能：dice / qq_actions / reminder / translate / voice / weather / web_search |
 | `config/` | YAML 配置 12 份：persona / routine / memory / console / shaping / programs / channels / dynamics / activities / locations / tts / llm |
 | `console/` | 中央控制台前端 V2：纯静态单页（零构建、零运行时依赖），内置 Mock 演示模式 |
+| `desktop/` | 桌面客户端（Electron 桌面壳 v0.2.0）：原生窗口加载控制台 · 托盘常驻 · 后端生命周期 |
 | `tests/` | 测试（建设中） |
 | `docs/` | 《QQ-Agent 实现方案》（928 行）+ 实施进度盘点 |
 | `deploy/` | 部署说明：依赖安装、SnowLuma 接入、控制台托管 |
@@ -41,6 +42,25 @@ pip install -r requirements.txt
 
 控制台前端可独立体验：浏览器直接打开 `console/index.html`（Mock 演示模式，
 心跳 30 秒/拍演示；Live 模式待 `app/api/` HTTP 层就绪后接线）。
+
+## 桌面客户端（desktop/，Electron 桌面壳 v0.2.0）
+
+`desktop/` 是 ME_Agent 的原生桌面客户端（设计匠人开发，第 12 轮入库）：壳本身零业务逻辑——UI 完全复用 `console/`（Live 模式直连后端，演示模式引用仓库根 `console/`），数据全走后端 HTTP/WS，与《ME_Agent桌面壳对接契约_v1》对齐；契约接缝收敛在 `desktop/config.json`。
+
+前置：安装 [Node.js LTS](https://nodejs.org/)（≥18）；仓库已做过首次部署（跑过一次 `deploy\scripts\启动ME_Agent.bat`，仓库根存在 `.venv`）。
+
+```bat
+cd desktop
+npm install        :: 首次（下载 Electron，约 2-5 分钟）
+npm start          :: 启动桌面壳
+```
+
+- **首启行为链（自动推导 → 引导 → 演示降级）**：壳位于仓库 `desktop/` 子目录，启动时按 `.venv`、`app\__main__.py` 等特征**自动识别上级为仓库根**（免手填）；推导成功且 venv 就绪 → 跳过引导直接拉起/附加后端进 Live；推导成功但缺 venv → 引导窗预填路径 + `.bat` 部署指引；无仓库特征 → 引导窗手填；不想连后端可进演示模式（Mock）。手动覆盖能力保留（托盘「仓库与后端配置…」写 `config.local.json`，恒优先于自动推导）。
+- **托盘与后端生命周期**：窗口关闭 = 缩到托盘（后端保持运行），真正退出走托盘「退出」（可选带走后端，仅本壳拉起的实例）；后端双探（health 就绪 + status 特征判别，防无关程序占端口误附加）；实例锁占用（InstanceLockError）明确提示不重试。
+- **Windows 免装 Node 分发**：`npm run package-win` → `dist\QQAgentDesktop-win32-x64\QQAgentDesktop.exe`（整文件夹拷走即用；产物独立运行，首启走引导窗手填仓库根，属预期）。
+- 入库形态不含 `desktop/console/`（演示运行时引用仓库根 `console/`，单一副本杜绝漂移）；`node_modules/`、`dist/`、`config.local.json`（用户本地状态）不入库，由自带 `desktop/.gitignore` 覆盖。
+
+细节（console 来源优先级、配置项表、冒烟口径）见 `desktop/README.md`。
 
 ## 当前状态（2026-10-25）
 

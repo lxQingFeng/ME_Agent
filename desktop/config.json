@@ -1,0 +1,20 @@
+{
+  "backendUrl": "http://127.0.0.1:8000",
+  "healthPath": "/api/v1/system/health",
+  "statusPath": "/api/v1/system/status",
+  "repoDir": "",
+  "backendStartCommand": "",
+  "backendStartCwd": "",
+  "spawnTimeoutMs": 60000,
+  "spawnArgs": ["--host", "127.0.0.1"],
+  "consoleFromBackend": true,
+  "preferRepoConsole": true,
+  "takeBackendDownOnExit": false,
+  "openAtLogin": false,
+  "startMinimized": false,
+  "windowWidth": 1280,
+  "windowHeight": 860,
+  "windowMinWidth": 940,
+  "windowMinHeight": 640,
+  "demoNoBackendNotify": true
+}
