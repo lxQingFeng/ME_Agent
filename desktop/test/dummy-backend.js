@@ -4,8 +4,14 @@
    · /api/v1/system/status → ME_Agent 特征字段（memory/gateway/programs/tts/llm_enabled/started_at）
    · /console/* → 静态服务项目内 vendored 控制台（live 冒烟 loadURL 用）
    · /api/v1/world/state|transitions → 合法最小 WorldState（控制台总览可渲染）
+   v0.3.0 联动启动形态：
+   · POST /api/v1/system/boot → {ok:true, accepted:true, programs:[…]}（编排触发；
+     触发后 0-1.2s snowluma busy 30% → 1.2-2.4s busy 70% → running——供壳侧
+     boot-orchestrator 快照差分/进度事件/收口判定全链路观测）
+   · GET /api/v1/programs → 程序条目数组（boot 触发前后状态演化）
    环境开关：
    · DUMMY_FOREIGN=1  → 健康返回 ok 但 status 无 ME_Agent 特征字段（模拟无关程序占端口）
+   · DUMMY_NO_BOOT=1  → /system/boot 返回 404（模拟旧后端：端点未实现→壳静默降级）
    · DUMMY_PORT       → 监听端口（默认 8791）
    */
 "use strict";
@@ -15,7 +21,9 @@ const fs = require("fs");
 const path = require("path");
 const PORT = Number(process.env.DUMMY_PORT || 8791);
 const FOREIGN = process.env.DUMMY_FOREIGN === "1";
+const NO_BOOT = process.env.DUMMY_NO_BOOT === "1";
 const CONSOLE_DIR = path.join(__dirname, "..", "console");
+let bootAt = 0;   // POST /system/boot 时间戳（0 = 未触发）
 
 const WORLD_STATE = {
   time: { wall_clock: new Date().toISOString(), circadian: "evening" },
@@ -44,12 +52,39 @@ const STATUS = FOREIGN
 
 const MIME = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".svg": "image/svg+xml", ".png": "image/png" };
 
+/* v0.3.0：/programs 程序条目（boot 编排仿真——触发前 stopped，触发后 busy+progress → running） */
+function programsSnapshot() {
+  const t = bootAt ? Date.now() - bootAt : -1;
+  let snow;
+  if (!bootAt) snow = { id: "snowluma", name: "SnowLuma", status: "stopped" };
+  else if (t < 1200) snow = { id: "snowluma", name: "SnowLuma", status: "busy", busy_action: "start", progress: { phase: "launch", percent: 30, done: false } };
+  else if (t < 2400) snow = { id: "snowluma", name: "SnowLuma", status: "busy", busy_action: "start", progress: { phase: "handshake", percent: 70, done: false } };
+  else snow = { id: "snowluma", name: "SnowLuma", status: "running", pid: 4242 };
+  const obs = { id: "obsidian_sync", name: "Obsidian 同步", status: "running", pid: 4243 };
+  return [snow, obs];
+}
+
 const srv = http.createServer((req, res) => {
   const send = obj => { res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(obj)); };
+  const notFound = obj => { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj || { ok: false, error: "not found" })); };
   if (req.url === "/health" || req.url === "/api/v1/system/health") {
     return send({ ok: true, ts: Date.now(), service: FOREIGN ? "foreign" : "dummy-me-agent" });
   }
   if (req.url === "/api/v1/system/status") return send(STATUS);
+  /* v0.3.0 联动启动：boot 触发 + programs 快照（含 404 降级仿真开关） */
+  if (req.method === "POST" && req.url === "/api/v1/system/boot") {
+    if (NO_BOOT) return notFound({ ok: false, error: "endpoint not implemented" });
+    let body = "";
+    req.on("data", d => { body += d; });
+    req.on("end", () => {
+      bootAt = Date.now();
+      let src = null;
+      try { src = JSON.parse(body).source; } catch (e) {}
+      send({ ok: true, accepted: true, source: src, programs: ["snowluma", "obsidian_sync"], started_at: new Date().toISOString() });
+    });
+    return;
+  }
+  if (req.method === "GET" && req.url.startsWith("/api/v1/programs")) return send(programsSnapshot());
   if (req.url.startsWith("/api/v1/world/state")) return send(WORLD_STATE);
   if (req.url.startsWith("/api/v1/world/transitions")) return send([]);
   if (req.url.startsWith("/api/v1/")) return send({ ok: true, note: "dummy", path: req.url });

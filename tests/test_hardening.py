@@ -31,6 +31,7 @@ PY = sys.executable
 # 本测试进程及其所有子进程统一 UTF-8 模式(与部署启动脚本同口径,
 # 规避 GBK locale Windows 上管道编解码不一致)。
 os.environ["PYTHONUTF8"] = "1"
+os.environ["ME_AUTOSTART"] = "0"   # 第 13 轮: 关闭启动自联动(测试起服只测 API, 不真拉第三方程序)
 RESULTS: list[tuple[str, bool, str]] = []
 
 

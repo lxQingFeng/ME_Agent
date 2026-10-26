@@ -36,6 +36,12 @@
 
 监控: monitor 循环每 10s 刷新进程/容器状态并做令牌增量扫描, 状态变化时向 bus 发
 program.status 事件(WS 推送)。
+
+开机联动(2026-10-26 第 13 轮): config/programs.yaml 顶层 autostart 编排
+(hindsight → snowluma → obsidian_sync, 顺序与每步动作开关), boot()/boot_async()
+整链执行 —— 幂等(已运行跳过)、未安装自动安装→启动→接入、失败降级不阻塞;
+python -m app 启动默认自动执行(ME_AUTOSTART=0 / --no-boot / autostart.enabled:
+false 可关), POST /api/v1/system/boot 供手动/壳触发(契约第 13 轮定稿, 勿改名)。
 """
 from __future__ import annotations
 
@@ -44,6 +50,7 @@ import json
 import re
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import time
@@ -53,6 +60,10 @@ from pathlib import Path
 import httpx
 
 GITHUB_API = "https://api.github.com"
+
+# Windows 无窗口 spawn(第 13 轮桌面壳验收): 桌面壳/pythonw 形态下后台拉起
+# SnowLuma/compose 子进程不闪控制台黑窗; 非 Windows 恒 0(标志仅 Win 语义)。
+_WIN_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 LOGO = {"hindsight": "H", "snowluma": "S", "napcat": "N", "obsidian_sync": "O"}
 COLOR = {"hindsight": "var(--purple)", "snowluma": "var(--green)",
@@ -88,6 +99,10 @@ class ProgramManager:
         self._busy: dict[str, str] = {}            # pid -> 执行中的长动作名(install/update)
         self._action_tasks: dict[str, asyncio.Task] = {}
         self._compose: list[str] | None = None     # 缓存 compose 命令(['docker','compose'] / ['docker-compose'] / [] 不可用)
+        # 开机联动(第 13 轮): 整链状态与执行任务(POST /api/v1/system/boot / 启动自联动共用)
+        self._boot_state: dict = {"status": "idle", "trigger": None, "started_at": None,
+                                  "finished_at": None, "report": None}
+        self._boot_task: asyncio.Task | None = None
         self._load_state()
 
     # ---------- 基础 ----------
@@ -143,6 +158,12 @@ class ProgramManager:
         if self._client:
             await self._client.aclose()
         await self.stop_monitor()
+        if self._boot_task is not None and not self._boot_task.done():
+            self._boot_task.cancel()
+            try:
+                await self._boot_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     # ---------- GitHub release ----------
     async def _latest_release(self, pid: str) -> dict:
@@ -512,7 +533,8 @@ class ProgramManager:
         elif len(cmd) > 1 and Path(str(cmd[1])).exists():
             cwd = str(Path(cmd[1]).parent)
         proc = await asyncio.create_subprocess_exec(
-            *[str(c) for c in cmd], stdout=logfh, stderr=asyncio.subprocess.STDOUT, cwd=cwd)
+            *[str(c) for c in cmd], stdout=logfh, stderr=asyncio.subprocess.STDOUT, cwd=cwd,
+            creationflags=_WIN_NO_WINDOW)   # Win: 无窗口(桌面壳拉起不闪黑窗)
         self._procs[pid] = proc
         st.update(status="running", pid=proc.pid, started_at=time.time(), exit_code=None)
         self._save_state()
@@ -1161,6 +1183,315 @@ class ProgramManager:
             return {"ok": True}
         return {"ok": True, "note": "未在运行"}
 
+    # ---------- 开机联动 boot(第 13 轮, 契约定稿) ----------
+    # config/programs.yaml 顶层 autostart 编排: steps 顺序 + 每步动作开关。
+    # 触发口: ① python -m app 启动默认自动执行(boot_enabled 开关, ME_AUTOSTART=0 /
+    #    --no-boot / autostart.enabled=false 关闭); ② POST /api/v1/system/boot 手动/壳触发。
+    # 语义: 整链幂等(已运行→skip); 每步 未安装→install→start→integrate;
+    #    环境缺失/安装失败 → 降级记录(error+hint)继续后续步骤; 意外异常 → failed 继续;
+    #    任何失败都不阻塞后端服务本身。进度与状态复用 program.status/progress/webui 通道。
+
+    BOOT_ENV = "ME_AUTOSTART"   # 启动自联动开关环境变量(优先级高于 yaml)
+
+    def boot_config(self) -> dict:
+        """autostart 编排配置(浅拷贝 + steps 规范为 list[dict] 且必须带 id)。"""
+        cfg = dict((self.settings.programs_cfg or {}).get("autostart") or {})
+        raw = cfg.get("steps")
+        steps = [s for s in (raw if isinstance(raw, list) else []) if isinstance(s, dict) and s.get("id")]
+        cfg["steps"] = steps
+        return cfg
+
+    def boot_enabled(self) -> bool:
+        """启动自联动开关: env ME_AUTOSTART(0/1) 优先, 缺省取 yaml autostart.enabled(默认 true)。
+
+        注意口径: 关闭只影响「python -m app 启动时自动执行」; 手动 POST /system/boot 不受影响。
+        """
+        raw = os.environ.get(self.BOOT_ENV, "").strip().lower()
+        if raw in ("0", "false", "no", "off"):
+            return False
+        if raw in ("1", "true", "yes", "on"):
+            return True
+        return bool(self.boot_config().get("enabled", True))
+
+    def boot_steps(self) -> list[dict]:
+        """规范化步骤: 补默认动作开关 —— install/start 缺省开(但 internal/external 形态
+        恒不代管安装), integrate 缺省 = 有接入配置且非 internal/external 形态。
+        """
+        out: list[dict] = []
+        for s in self.boot_config()["steps"]:
+            d = self.def_(s["id"]) or {}
+            kind = d.get("kind", "binary")
+            managed = kind not in ("internal", "external")
+            e = {"id": s["id"]}
+            e["install"] = bool(s.get("install", managed))
+            e["start"] = bool(s.get("start", True))
+            e["integrate"] = bool(s.get("integrate", managed and bool(d.get("integrate"))))
+            if s.get("health_wait_s") is not None:
+                e["health_wait_s"] = float(s["health_wait_s"])
+            out.append(e)
+        return out
+
+    def _boot_is_installed(self, d: dict) -> bool:
+        st = self._st(d["id"])
+        if st.get("install_dir") and Path(st["install_dir"]).is_dir():
+            return True
+        if d.get("kind") == "docker" and (st.get("version") or st.get("container")):
+            return True
+        return False
+
+    async def _boot_is_running(self, d: dict) -> bool:
+        """「已在运行」判定(幂等跳过的口径): 句柄 > docker 容器 > internal 任务 > 状态+pid 存活。"""
+        pid = d["id"]
+        kind = d.get("kind", "binary")
+        if kind == "internal":
+            t = self._internal_tasks.get(pid)
+            return bool(t and not t.done())
+        if kind == "docker":
+            if await self._docker_container_state(pid) == "running":
+                return True
+            # 无 docker CLI(远程 external 自管/纯状态口径)时退回持久化状态
+            return self._st(pid).get("status") == "running"
+        held = self._procs.get(pid)
+        if held is not None and held.returncode is None:
+            return True
+        st = self._st(pid)
+        return st.get("status") == "running" and _pid_alive(st.get("pid"), st.get("started_at"))
+
+    async def boot_plan(self) -> list[dict]:
+        """联动计划(触发时刻口径): 每步 {id, name, state, actions, ...}。
+
+        actions 取值: ["install","start","integrate"] 子集(按当前状态裁剪) /
+        ["skip"](已运行) / ["skip"](busy 让路) / ["unknown"](id 不在 programs 注册表)。
+        执行时刻会重新判定(与 plan 有出入以执行报告为准)。
+        """
+        plan: list[dict] = []
+        for s in self.boot_steps():
+            pid = s["id"]
+            d = self.def_(pid)
+            entry = {"id": pid, "name": (d or {}).get("name", pid)}
+            if d is None:
+                entry.update(state="unknown", actions=["unknown"])
+            elif pid in self._busy:
+                entry.update(state="busy", actions=["skip"], busy_action=self._busy[pid])
+            elif await self._boot_is_running(d):
+                entry.update(state="running", actions=["skip"], note="已在运行")
+            else:
+                acts: list[str] = []
+                if s["install"] and not self._boot_is_installed(d):
+                    acts.append("install")
+                if s["start"]:
+                    acts.append("start")
+                if s["integrate"]:
+                    acts.append("integrate")
+                entry.update(state=self._st(pid).get("status", "not_installed"), actions=acts)
+            plan.append(entry)
+        return plan
+
+    async def boot(self, trigger: str = "manual") -> dict:
+        """开机联动·同步入口(启动自联动 / POST /system/boot?wait=true 用): 等整链完成, 返回完整报告。"""
+        if self._boot_state.get("status") == "running":
+            return {"ok": False, "busy": True,
+                    "error": "联动正在执行中(GET /api/v1/system/boot 观察进度), 完成后可再次触发(幂等)"}
+        if not self.boot_steps():
+            rep = self._empty_boot_report(trigger)
+            return rep
+        plan = await self.boot_plan()
+        self._boot_begin(trigger, plan)
+        return await self._boot_execute(trigger, plan)
+
+    async def boot_async(self, trigger: str = "manual") -> dict:
+        """开机联动·后台入口(POST /system/boot 默认用): 立即返回 plan/started/skipped, 后台执行整链。
+
+        started = 本次将执行动作的步骤(未运行); skipped = 触发时刻已在运行/让路的步骤。
+        进度复用 program.status/progress/webui 推送; 完成报告 GET /api/v1/system/boot。
+        """
+        if self._boot_state.get("status") == "running":
+            return {"ok": False, "busy": True,
+                    "error": "联动正在执行中, 勿重复触发(幂等场景请等完成)",
+                    "state": self.boot_status()}
+        if not self.boot_steps():
+            return {"ok": True, "queued": False, "trigger": trigger, "plan": [],
+                    "started": [], "skipped": [], "note": "无联动步骤(autostart.steps 未配置)"}
+        plan = await self.boot_plan()
+        self._boot_begin(trigger, plan)
+        self._boot_task = asyncio.create_task(self._boot_run(trigger, plan))
+        started = [p["id"] for p in plan if p["actions"] not in ([], ["skip"], ["unknown"])]
+        skipped = [p["id"] for p in plan if p["actions"] in ([], ["skip"])]
+        return {"ok": True, "queued": True, "trigger": trigger, "status": "running",
+                "plan": plan, "started": started, "skipped": skipped,
+                "note": "整套联动已转后台执行: 进度经 GET /api/v1/programs 轮询或 WS "
+                        "program.status/program.progress/program.webui 观察; "
+                        "完成报告 GET /api/v1/system/boot(可带 ?wait=true 重触发同步等待)"}
+
+    def boot_status(self) -> dict:
+        """整链状态(GET /api/v1/system/boot): idle/running/done + 最近一次完整报告。"""
+        out = dict(self._boot_state)
+        if self._boot_task is not None:
+            out["task_alive"] = not self._boot_task.done()
+        return out
+
+    # ---- boot 内部 ----
+
+    def _empty_boot_report(self, trigger: str) -> dict:
+        rep = {"ok": True, "trigger": trigger, "steps": [], "started": [], "skipped": [],
+               "degraded": [], "failed": [], "note": "无联动步骤(autostart.steps 未配置)"}
+        self._boot_state.update(status="done", trigger=trigger, started_at=time.time(),
+                                finished_at=time.time(), report=rep)
+        return rep
+
+    def _boot_begin(self, trigger: str, plan: list[dict]) -> None:
+        self._boot_state.update(status="running", trigger=trigger, started_at=time.time(),
+                                finished_at=None, report=None)
+        if self.bus:
+            self.bus.emit("system.boot", {"status": "running", "trigger": trigger, "plan": plan})
+
+    async def _boot_run(self, trigger: str, plan: list[dict]) -> None:
+        """boot_async 的后台任务体: 异常收口到报告, 绝不外溢(后端不受影响)。"""
+        try:
+            await self._boot_execute(trigger, plan)
+        except asyncio.CancelledError:
+            pass    # 服务关闭取消联动: 状态已由 _boot_execute 的 finally 收口
+        except Exception as e:
+            rep = {"ok": False, "trigger": trigger, "error": f"boot 编排异常: {type(e).__name__}: {e}"}
+            self._boot_state.update(status="done", finished_at=time.time(), report=rep)
+
+    async def _boot_execute(self, trigger: str, plan: list[dict]) -> dict:
+        """整链执行核心(调用方已过 busy 校验并置 running 状态)。"""
+        report: dict = {"ok": True, "trigger": trigger, "started_at": time.time(),
+                        "plan": plan, "steps": []}
+        try:
+            for s in self.boot_steps():
+                pid = s["id"]
+                d = self.def_(pid)
+                step = {"id": pid, "name": (d or {}).get("name", pid)}
+                try:
+                    if d is None:
+                        step.update(outcome="failed", actions=["unknown"],
+                                    error="未知程序 id(不在 programs 注册表, 请检查 autostart.steps)")
+                    else:
+                        step.update(await self._boot_step(d, s))
+                except Exception as e:
+                    step.update(outcome="failed", actions=[], error=f"{type(e).__name__}: {e}")
+                report["steps"].append(step)
+        finally:
+            steps = report["steps"]
+            report["started"] = [x["id"] for x in steps if x.get("outcome") == "started"]
+            report["skipped"] = [x["id"] for x in steps if x.get("outcome") in ("skipped", "busy")]
+            report["degraded"] = [x["id"] for x in steps if x.get("outcome") == "degraded"]
+            report["failed"] = [x["id"] for x in steps if x.get("outcome") == "failed"]
+            report["ok"] = not report["failed"]
+            report["finished_at"] = time.time()
+            self._boot_state.update(status="done", trigger=trigger,
+                                    finished_at=report["finished_at"], report=report)
+            if self.bus:
+                self.bus.emit("system.boot", {
+                    "status": "done", "trigger": trigger, "ok": report["ok"],
+                    "started": report["started"], "skipped": report["skipped"],
+                    "degraded": report["degraded"], "failed": report["failed"]})
+        return report
+
+    async def _boot_step(self, d: dict, s: dict) -> dict:
+        """单步编排: busy 让路 → 已运行跳过 → (未安装)install → start → integrate。
+
+        每个失败都降级记录后返回, 绝不抛出(异常由 _boot_execute 兜底为 failed)。
+        """
+        pid = d["id"]
+        st = self._st(pid)
+        out: dict = {"id": pid, "name": d.get("name", pid)}
+        if pid in self._busy:
+            # 控制台正在跑该程序的 install/update → 让路(不与之争抢, 幂等下次联动补上)
+            self._log(pid, f"[boot] 该程序正在执行 {self._busy[pid]}, 联动让路跳过")
+            return {**out, "outcome": "busy", "actions": [],
+                    "note": f"该程序正在执行 {self._busy[pid]}, 本次让路跳过"}
+        if await self._boot_is_running(d):
+            self._log(pid, "[boot] 已在运行, 跳过(幂等)")
+            return {**out, "outcome": "skipped", "actions": [], "note": "已在运行"}
+        acts: list[str] = []
+        detail: dict = {}
+        degraded: list[str] = []
+        # ① 未安装 → install(经 _busy 登记, 与控制台长动作互斥; 失败 → 降级终止本步)
+        if s["install"] and not self._boot_is_installed(d):
+            acts.append("install")
+            res = await self._boot_install(pid, st)
+            detail["install"] = res
+            if not res.get("ok"):
+                degraded.append("install")
+                out["error"] = res.get("error")
+                if res.get("hint"):
+                    out["hint"] = res["hint"]
+                self._log(pid, f"[boot] 安装未成功, 降级跳过启停: {res.get('error', '')}")
+                return {**out, "outcome": "degraded", "actions": acts, "degraded": degraded,
+                        "detail": detail, "note": "安装未成功(已降级, 不阻塞后续步骤)"}
+        # ② start(running 拒绝口径 → 视作已运行, 幂等)
+        if s["start"]:
+            acts.append("start")
+            res = await self.start(pid)
+            detail["start"] = {k: v for k, v in res.items() if k in ("ok", "pid", "note", "error", "hint", "detail")}
+            if res.get("ok") is False and res.get("running") is True:
+                self._log(pid, "[boot] 启动时发现已在运行(race), 视作跳过")
+                return {**out, "outcome": "skipped", "actions": acts, "detail": detail,
+                        "note": "启动时发现已在运行"}
+            if not res.get("ok"):
+                degraded.append("start")
+                out["error"] = res.get("error")
+                if res.get("hint"):
+                    out["hint"] = res["hint"]
+                self._log(pid, f"[boot] 启动未成功, 降级: {res.get('error', '')}")
+                return {**out, "outcome": "degraded", "actions": acts, "degraded": degraded,
+                        "detail": detail, "note": "启动未成功(已降级, 不阻塞后续步骤)"}
+        # ③ integrate(docker 形态先等 http 健康, 超时不阻塞; 失败只记降级不回滚 start)
+        if s["integrate"] and d.get("integrate"):
+            acts.append("integrate")
+            if d.get("kind") == "docker" and s.get("health_wait_s", 0) > 0:
+                await self._boot_wait_http(d, s["health_wait_s"])
+            res = await self.integrate(pid)
+            detail["integrate"] = {k: v for k, v in res.items() if k in ("ok", "mode", "error", "guide")}
+            if not res.get("ok"):
+                degraded.append("integrate")
+                self._log(pid, f"[boot] 接入未成功(已降级): {res.get('error', '')}")
+        outcome = "degraded" if degraded else "started"
+        return {**out, "outcome": outcome, "actions": acts, "degraded": degraded, "detail": detail}
+
+    async def _boot_install(self, pid: str, st: dict) -> dict:
+        """boot 里的安装: 复用 install() 既有链路, 外套 _busy 互斥(与控制台长动作同口径)。"""
+        prev_status = st.get("status")
+        self._busy[pid] = "boot:install"
+        st["status"] = "busy"
+        st["busy_action"] = "install"
+        self._save_state()
+        await self._notify(pid)
+        try:
+            res = await self.install(pid)
+            if res.get("ok"):
+                st["last_action"] = {"action": "install", "ok": True, "ts": time.time()}
+            return res
+        finally:
+            self._busy.pop(pid, None)
+            st["busy_action"] = None
+            st.pop("progress", None)
+            if st.get("status") == "busy":    # 失败时收口回原状态(成功路径 install 已置 installed)
+                st["status"] = ("installed" if (st.get("install_dir") or st.get("version")
+                                               or st.get("container")) else (prev_status or "not_installed"))
+            self._save_state()
+            await self._notify(pid)
+
+    async def _boot_wait_http(self, d: dict, timeout_s: float) -> None:
+        """docker 形态 start 后等 http 健康就绪(compose up 返回 ≠ 服务可用, 建内存库需秒级)。"""
+        url = ((d.get("run") or {}).get("health") or {}).get("url")
+        if not url:
+            return
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                r = await self._client_ensure().get(url, timeout=3.0)
+                if r.status_code < 500:
+                    self._log(d["id"], f"[boot] http 健康就绪({r.status_code}, {url})")
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(1.5)
+        self._log(d["id"], f"[boot] 等待 http 健康超时({timeout_s:.0f}s, {url}), 继续执行不阻塞")
+
     # ---------- docker 助手 ----------
     async def _docker_available(self) -> bool:
         if not shutil.which("docker"):
@@ -1205,7 +1536,8 @@ class ProgramManager:
         try:
             p = await asyncio.create_subprocess_exec(
                 *[str(a) for a in args],
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                creationflags=_WIN_NO_WINDOW)   # Win: docker/compose 等亦不闪黑窗
             try:
                 out = (await asyncio.wait_for(p.communicate(), timeout=timeout_s))[0] \
                     .decode("utf-8", "replace")

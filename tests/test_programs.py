@@ -36,6 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 os.environ["PYTHONUTF8"] = "1"
+os.environ["ME_AUTOSTART"] = "0"   # 第 13 轮: 关闭启动自联动, 避免 TestClient 起服时真装/真拉第三方程序
 RESULTS: list[tuple[str, bool, str]] = []
 SKIPS: list[str] = []
 

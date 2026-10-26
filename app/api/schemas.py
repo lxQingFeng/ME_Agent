@@ -61,3 +61,13 @@ class TTSBridgeIn(BaseModel):
 # ---- 系统 ----
 class EngineControlIn(BaseModel):
     action: Literal["tick", "pause", "resume"]
+
+
+class BootIn(BaseModel):
+    """POST /api/v1/system/boot 请求体(第 13 轮开机联动, 契约定稿)。
+
+    缺省(空体)后台执行: 立即返回 {ok, queued, plan, started, skipped},
+    进度经 program.status/progress/webui 推送, 完成报告 GET /system/boot;
+    wait=true 同步等待整链完成并直接返回完整报告(测试/CLI 联调用)。
+    """
+    wait: bool = False

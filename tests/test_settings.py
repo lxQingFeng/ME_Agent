@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ["PYTHONUTF8"] = "1"
 os.environ.pop("DEEPSEEK_API_KEY", None)   # 测试口径: 不受外部环境变量干扰
+os.environ["ME_AUTOSTART"] = "0"           # 第 13 轮: 关闭启动自联动, 避免起服时真装/真拉第三方程序
 
 RESULTS: list[tuple[str, bool, str]] = []
 

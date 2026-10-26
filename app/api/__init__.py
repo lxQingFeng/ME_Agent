@@ -8,7 +8,7 @@ create_app(ctx) 装配全部路由:
   /api/v1/programs/* 第三方程序(状态/动作/日志/全量分页)
   /api/v1/settings/* LLM/人设设置(保存热生效, 密钥脱敏)
   /api/v1/tts/*      TTS 全套(模型/配置/检查/试合成/克隆)
-  /api/v1/system/*   健康检查/全系统状态/引擎控制
+  /api/v1/system/*   健康检查/全系统状态/引擎控制/开机联动(POST+GET /system/boot)
   /api/v1/diagnostics/export  诊断包导出(密钥全部脱敏为 hasXxx 指纹)
   /api/ws            控制台实时推送(WS)
   /onebot            OneBot v11 反向 WS(SnowLuma 接入)

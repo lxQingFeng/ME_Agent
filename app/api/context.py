@@ -159,6 +159,14 @@ class AppContext:
         except Exception:
             pass
 
+        # 开机联动(第 13 轮): 后端就绪后按 config/programs.yaml autostart 编排自动
+        # 拉起第三方程序(hindsight → snowluma → obsidian_sync)并接入。默认开;
+        # ME_AUTOSTART=0 / --no-boot / autostart.enabled=false 关闭(测试与「只起
+        # 后端」场景)。后台执行, 整链失败降级不阻塞后端; 手动触发走
+        # POST /api/v1/system/boot(不受此开关影响)。
+        if self.programs.boot_enabled():
+            self.tasks.append(asyncio.create_task(self._safe_boot(), name="autoboot"))
+
         # 记忆 bank 自愈(后台, 失败不影响启动)
         asyncio.create_task(self._safe_ensure_banks(), name="ensure-banks")
 
@@ -217,6 +225,14 @@ class AppContext:
     async def _safe_ensure_banks(self) -> None:
         try:
             await self.memory.ensure_banks()
+        except Exception:
+            pass
+
+    async def _safe_boot(self) -> None:
+        """开机联动任务体: 步骤级失败已在 boot() 内降级记录, 这里只兜底编排级异常,
+        保证联动任何问题都不影响后端服务(CancelledError 放行给 shutdown 取消)。"""
+        try:
+            await self.programs.boot(trigger="startup")
         except Exception:
             pass
 

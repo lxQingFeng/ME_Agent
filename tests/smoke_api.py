@@ -1,12 +1,14 @@
 """API 层冒烟自测(零外部依赖, 标准库 urllib)。
 
-用法: 先起服务(python3 -m app --no-engine), 再运行:
+用法: 先起服务(python3 -m app --no-engine --no-boot), 再运行:
     python3 tests/smoke_api.py [base_url]     # 默认 http://127.0.0.1:8000
 
 覆盖:
 1. TTS 配置 PUT 保存(请求头/请求体两段原文, 含 CRLF/CJK/尾随空白/占位符)
    → GET 读回 → 逐字节一致断言(文本相等 + sha256 相等);
-2. 已验收四路由回归: /world/state /programs /chat/conversations /plugins。
+2. 已验收四路由回归: /world/state /programs /chat/conversations /plugins;
+3. 开机联动契约(第 13 轮): GET /system/boot 状态端点 200 且 status 口径合法
+   (--no-boot 起服时应为 idle; 联动逻辑由 tests/test_boot.py 专项覆盖)。
 
 退出码 0=全部通过, 1=有失败(失败项打印到 stdout, 前缀 FAIL)。
 """
@@ -139,6 +141,12 @@ def main() -> int:
         key = cfg.get("apiKey", "")
         check("密钥脱敏回显(不含明文)", bool(key) and "***" in key and "1234567890" not in key,
               f"apiKey={key!r}")
+
+    # ---------- ⑥ 开机联动契约(第 13 轮; 本冒烟用 --no-boot 起服, 只验状态端点) ----------
+    rc, boot = _req("GET", "/api/v1/system/boot")
+    check("GET /api/v1/system/boot → 200 且 status 口径合法",
+          rc == 200 and isinstance(boot, dict) and boot.get("status") in ("idle", "running", "done"),
+          f"status={rc} body={str(boot)[:120]}")
 
     failed = [r for r in results if not r[1]]
     print(f"\n冒烟结果: {len(results) - len(failed)}/{len(results)} PASS" +

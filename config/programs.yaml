@@ -81,3 +81,30 @@ programs:
       command: null
       health: {type: internal, interval_s: 30}
     integrate: open_vault
+
+# 开机联动 boot 编排(2026-10-26 第 13 轮, 契约定稿):
+# 桌面壳/后端启动后, 所需第三方程序自动拉起并接入, 无需到控制台逐个点。触发口:
+#   ① python -m app 启动后默认自动执行(开关见下; 桌面壳拉起后端即整链就绪);
+#   ② POST /api/v1/system/boot 手动/壳触发(同一编排, 整链幂等, 可重复调用)。
+# 策略(整链幂等): 按 steps 顺序执行; 每步 未安装→install→start→integrate,
+#   已运行→跳过; 失败→降级记录(error/hint)不阻塞后续步骤、更不阻塞后端服务。
+#   进度与状态复用既有通道: GET /api/v1/programs 轮询 + WS program.status /
+#   program.progress / program.webui 推送; 完成报告 GET /api/v1/system/boot。
+autostart:
+  enabled: true          # 启动自联动开关(默认开)。env ME_AUTOSTART=0 同效且优先;
+                          # CLI --no-boot 亦等效——供测试与「只想起后端」的场景。
+                          # 关闭仅影响①启动自动执行, 不影响②手动 POST /system/boot。
+  steps:
+    - id: hindsight      # ① 记忆引擎先行: 对话/心跳即依赖记忆, docker 形态无本地下载
+      install: true      #    未安装 → docker compose pull / docker pull(既有链路;
+                          #    本机无 docker → 降级指引, 不阻塞后续步骤)
+      start: true        #    compose up -d(容器已 running 则跳过)
+      integrate: true    #    建双 bank(qq-agent/knowledge); 先等 http 健康再接入
+      health_wait_s: 20  #    start 后等健康就绪的上限(超时不阻塞, 只影响本步接入结果)
+    - id: snowluma       # ② QQ 协议端: 反向 WS 接入后端网关(启动时网关已在监听)
+      install: true      #    未安装 → release 下载链路(既有: 平台自动选包+进度推送)
+      start: true        #    spawn 解出的 launcher(自带 node 运行时)
+      integrate: true    #    写 OneBot 对接配置片段(SnowLuma 侧填参指引)
+    - id: obsidian_sync  # ③ Obsidian 同步开启: 人类可审计投影(进程内同步循环)
+      start: true        #    internal 形态: 启动每日 00:10 同步循环(已运行则跳过)
+      integrate: false   #    open_vault 仅返回查看指引, 开机时无意义

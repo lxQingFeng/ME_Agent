@@ -36,6 +36,10 @@ class Settings:
         self.reload()
 
     def reload(self) -> None:
+        # console 先行: persona/llm 的 state/settings 覆盖层合并(_merged→state_dir)
+        # 依赖 self.console(第 13 轮修复既有启动阻断: 默认 state 目录形态下
+        # Settings() 在 console 赋值前触达 state_dir → AttributeError 崩溃)。
+        self.console = _yaml("console.yaml")
         # 第 11 轮: persona/llm 支持 state/settings/ 覆盖层(控制台设置 API 保存处,
         # git 不追踪 → 密钥不入库), 键级覆盖 config/ 默认值
         self.persona = self._merged("persona.yaml")
@@ -49,7 +53,6 @@ class Settings:
         self.llm_cfg = self._merged("llm.yaml")
         self.tts_cfg = _yaml("tts.yaml")
         self.programs_cfg = _yaml("programs.yaml")
-        self.console = _yaml("console.yaml")
 
     def _merged(self, name: str) -> dict:
         """config/<name>(仓库默认) 与 state/settings/<name>(控制台保存值) 浅合并。"""

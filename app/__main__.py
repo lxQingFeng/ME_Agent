@@ -5,6 +5,11 @@
   python -m app --port 8080           # 自定义端口
   python -m app --tick-seconds 5      # 心拍加速(联调; 生产 300)
   python -m app --no-engine           # 只起 API 服务(前端联调/冒烟)
+  python -m app --no-boot             # 跳过开机联动(等效 ME_AUTOSTART=0)
+
+开机联动(2026-10-26 第 13 轮): 启动后默认自动拉起 config/programs.yaml
+autostart 编排的第三方程序(hindsight → snowluma → obsidian_sync)并接入,
+整链幂等、失败降级不阻塞; 需手动触发用 POST /api/v1/system/boot。
 
 单实例锁(2026-10-25 补强): state/ 下 claim 票据, 同一 state 目录双开直接拒绝;
 换独立实例请设 ME_STATE_DIR=<其他目录>。
@@ -16,6 +21,7 @@
   ME_STATE_DIR        state 目录覆盖(多实例/测试)
   ME_ONEBOT_MODE      通道模式覆盖(reverse|forward)
   ME_ONEBOT_WS_URL    forward 模式协议端地址覆盖
+  ME_AUTOSTART        开机联动开关(0=启动不自跑; 手动 POST /system/boot 不受影响)
 """
 from __future__ import annotations
 
@@ -36,6 +42,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--tick-seconds", type=int, default=0,
                     help="世界心跳节拍秒数(覆盖配置; 联调可加速)")
     ap.add_argument("--no-engine", action="store_true", help="不起心跳引擎(仅 API 服务)")
+    ap.add_argument("--no-boot", action="store_true",
+                    help="跳过开机联动(不自动拉起第三方程序; 等效 ME_AUTOSTART=0, "
+                         "手动触发仍可用 POST /api/v1/system/boot)")
     return ap.parse_args(argv)
 
 
@@ -46,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    import os
+    if args.no_boot:
+        os.environ["ME_AUTOSTART"] = "0"   # 开机联动开关在 startup() 读取(见 app/api/context.py)
 
     from app.config import Settings
 

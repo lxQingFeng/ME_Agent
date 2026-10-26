@@ -45,6 +45,15 @@ const DEFAULTS = {
   spawnTimeoutMs: 60000,
   spawnArgs: ["--host", "127.0.0.1"],
 
+  /* v0.3.0 联动启动：后端就绪后 POST bootPath 触发第三方程序自动编排；
+     端点 404/未实现 → 静默降级为控制台程序页手动按钮（不报错刷屏）；
+     进度观测轮询 bootProgramsPath（program.* 主题同形态差分事件） */
+  bootEnabled: true,
+  bootPath: "/api/v1/system/boot",
+  bootProgramsPath: "/api/v1/programs",
+  bootPollIntervalMs: 1200,                 // 与控制台 busy 轮询同拍
+  bootWatchTimeoutMs: 240000,               // 观测 watchdog（编排含大下载也不失控）
+
   /* Live 控制台来源（§二）：true = 直接加载 {backendUrl}/console/index.html */
   consoleFromBackend: true,
 

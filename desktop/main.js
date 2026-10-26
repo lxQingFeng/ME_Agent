@@ -22,6 +22,11 @@
       已运行 → 直接附加，不出引导窗。一次配好写 config.local.json。
    4) 托盘常驻 + 关闭到托盘；开机自启（可选，托盘切换）；原生通知。
    5) --smoke：无头冒烟（xvfb 可跑）——JSON 汇总 + 退出码门禁。
+   6) v0.3.0 双击即达 + 联动启动：仓库根「启动桌面客户端.bat」双击入口（打包产物
+      优先 → Electron dev 运行时回退，start /b 无窗口）；后端就绪后 boot-orchestrator
+      POST /api/v1/system/boot 触发第三方程序自动编排，端点 404/未实现 → 静默降级为
+      控制台程序页手动按钮（不报错刷屏）；托盘 tooltip/原生通知经 program.* 主题
+      同形态事件体现编排进度；全链路（bat→壳→后端 spawn）无 cmd 窗口暴露。
    ============================================================ */
 "use strict";
 
@@ -30,6 +35,7 @@ const path = require("path");
 const fs = require("fs");
 const config = require("./config");
 const { BackendManager } = require("./backend-manager");
+const { BootOrchestrator } = require("./boot-orchestrator");
 
 const ROOT = config.ROOT;
 const BUILTIN_CONSOLE_DIR = path.join(ROOT, "console");   // 独立分发/入库排除同步时的回退副本
@@ -76,6 +82,26 @@ const backend = new BackendManager({
   takeBackendDownOnExit: cfg.takeBackendDownOnExit,
   log,
 });
+
+/* ---------- v0.3.0 联动启动：后端就绪后 POST /system/boot 触发第三方程序编排 ----------
+   端点未实现（404）等一切失败形态 → boot-orchestrator 内部静默降级为控制台程序页
+   手动按钮（不报错不刷屏、本会话不再重试）；进度经 program.* 主题同形态事件驱动
+   托盘 tooltip / 原生通知。契约接缝收敛在 config.json（bootPath 等）。 */
+const bootOrch = new BootOrchestrator({
+  url: cfg.backendUrl,
+  bootPath: cfg.bootPath,
+  programsPath: cfg.bootProgramsPath,
+  enabled: cfg.bootEnabled,
+  pollIntervalMs: cfg.bootPollIntervalMs,
+  watchTimeoutMs: cfg.bootWatchTimeoutMs,
+  log,
+  onEvent: e => onBootEvent(e),
+});
+
+function maybeTriggerBoot() {
+  if (bootOrch.state !== "idle") return;   // 每会话一次：重连/引导不重复编排
+  bootOrch.trigger().catch(e => log(`[boot] 触发异常（静默降级）：${e.message}`));
+}
 
 let win = null;             // 主窗口（控制台）
 let setupWin = null;        // 首启引导窗
@@ -254,6 +280,50 @@ function notify(title, body) {
   } catch (e) { /* 环境缺 dbus 等：静默 */ }
 }
 
+/* ---------- v0.3.0 联动启动事件 → 托盘 tooltip / 原生通知 ----------
+   program.status 主题同形态事件：进入 running → 原生通知；异常态 → 提醒；
+   program.progress 主题同形态事件：只更新 tooltip（防通知刷屏）；
+   done 收口：有变化才通知汇总，tooltip 复位；manual：完全静默（一次性日志）。 */
+function setTrayTooltip(text) { try { if (tray) tray.setToolTip(text); } catch (e) {} }
+
+function onBootEvent(e) {
+  switch (e.type) {
+    case "triggered":
+      log(`[boot] 已触发后端联动启动（POST ${cfg.bootPath} → HTTP ${e.httpStatus}），进度观测中`);
+      setTrayTooltip("QQ Agent 桌面控制台 · 联动启动中…");
+      refreshTray();
+      break;
+    case "manual":
+      /* 静默降级：控制台程序页手动按钮照常可用，不打扰用户 */
+      log(`[boot] 联动启动未启用（${e.note}）——控制台「第三方程序」页手动按钮照常可用`);
+      break;
+    case "status": {
+      const name = e.name || e.id;
+      if (e.status === "running" && e.prevStatus !== "running") {
+        notify("联动启动", `${name} 已运行${e.pid ? `（pid ${e.pid}）` : ""}`);
+      } else if (typeof e.status === "string" && /^(error|failed|crash)/.test(e.status)) {
+        notify("联动启动", `${name} 启动异常（${e.status}）`);
+      }
+      setTrayTooltip(`QQ Agent 桌面控制台 · 联动启动中（${e.running}/${e.total} 运行）`);
+      refreshTray();
+      break;
+    }
+    case "progress": {
+      const pct = e.percent != null ? ` ${e.percent}%` : "";
+      const phase = e.phase || "";
+      setTrayTooltip(`QQ Agent 桌面控制台 · 联动启动中：${e.name || e.id} ${phase}${pct}`.trim());
+      break;
+    }
+    case "done":
+      if (e.changed > 0) {
+        notify("联动启动完成", `${e.running}/${e.total} 个程序运行中${e.note === "watchdog" ? "（观测超时收口）" : ""}`);
+      }
+      setTrayTooltip("QQ Agent 桌面控制台");
+      refreshTray();
+      break;
+  }
+}
+
 /* ---------- 后端模式装载（首启/托盘重连共用） ---------- */
 function loadMode(mode) {
   BOOT_MODE = mode === "live" ? "live" : "demo";
@@ -278,6 +348,7 @@ async function bootFromDecision(decision, opts = {}) {
     if (decision.mode === "spawned") notify("QQ Agent 桌面控制台", "后端已拉起并就绪（Live 模式）");
     else log("[desktop] 附加运行中的后端（Live 模式）");
     startWatcher();
+    maybeTriggerBoot();            // v0.3.0：后端就绪 → 触发第三方程序自动编排（失败静默降级）
   } else if (!opts.fromSetup) {
     /* 降级路径的明确提示（§四：锁占/端口占勿含糊） */
     if (decision.mode === "lock-held") {
@@ -318,6 +389,19 @@ function statusLabel() {
   }
 }
 
+function bootLabel() {
+  /* v0.3.0 联动启动托盘状态行：仅在实际编排时出现（manual 静默降级不占菜单） */
+  if (!bootOrch || !cfg.bootEnabled) return null;
+  const s = bootOrch.summary();
+  if (bootOrch.state === "watching" || bootOrch.state === "stopped") {
+    return `联动启动：进行中（${s.running}/${s.total} 运行）`;
+  }
+  if (bootOrch.state === "done" && s.note !== "disabled") {
+    return `联动启动：${s.statusEvents > 0 ? `完成（${s.running}/${s.total} 运行）` : "完成（程序均已运行）"}`;
+  }
+  return null;
+}
+
 function createTray() {
   const iconPath = iconFile("tray.png");
   if (!iconPath) return null;
@@ -325,10 +409,14 @@ function createTray() {
     const t = new Tray(nativeImage.createFromPath(iconPath));
     t.setToolTip("QQ Agent 桌面控制台");
     const rebuild = () => {
-      t.setContextMenu(Menu.buildFromTemplate([
+      const items = [
         { label: "显示窗口", click: () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } else loadMode(BOOT_MODE); } },
         { type: "separator" },
         { label: statusLabel(), enabled: false },
+      ];
+      const bl = bootLabel();
+      if (bl) items.push({ label: bl, enabled: false });
+      items.push(
         { label: "重连后端（Live）", click: () => reconnectBackend() },
         { label: "切换演示模式（Mock）", click: () => loadMode("demo") },
         { label: "打开后端页面", click: () => shell.openExternal(cfg.backendUrl), enabled: lastDecision && (lastDecision.mode === "attached" || lastDecision.mode === "spawned") },
@@ -342,7 +430,8 @@ function createTray() {
         } },
         { type: "separator" },
         { label: "退出", click: () => { quitting = true; app.quit(); } },
-      ]));
+      );
+      t.setContextMenu(Menu.buildFromTemplate(items));
     };
     rebuild();
     t.on("click", () => { if (win && !win.isDestroyed()) { win.isVisible() ? win.focus() : win.show(); } });
@@ -419,7 +508,7 @@ ipcMain.on("desktop:setup-demo", () => {
 });
 
 /* ---------- 冒烟模式：收集页面 JS 错误 → JSON 汇总 → 退出码 ---------- */
-const smoke = { startedAt: Date.now(), pageErrors: [], consoleErrors: [], electronAdvisories: 0, loaded: false, backend: null, finalMode: null };
+const smoke = { startedAt: Date.now(), pageErrors: [], consoleErrors: [], electronAdvisories: 0, loaded: false, backend: null, finalMode: null, boot: null };
 function wireSmoke(w) {
   w.webContents.on("console-message", (_e, level, message, line, sourceId) => {
     if (level < 2) return;
@@ -474,7 +563,8 @@ app.whenReady().then(async () => {
   if (cfg.openAtLogin) { try { app.setLoginItemSettings({ openAtLogin: true }); } catch (e) {} }
   if (!IS_SMOKE) tray = createTray();
 
-  /* 4) 冒烟收口：10s 后输出 JSON 并退出（0 = 零 JS 错误且完成加载） */
+  /* 4) 冒烟收口：12s 后输出 JSON 并退出（0 = 零 JS 错误且完成加载；v0.3.0 +2s
+     为联动启动观测留窗——dummy 编排仿真 4.8s 内收口，见 test/dummy-backend.js） */
   if (IS_SMOKE) {
     const mode = BOOT_MODE;
     setTimeout(async () => {
@@ -495,11 +585,14 @@ app.whenReady().then(async () => {
           smoke.pageState = JSON.parse(ps);
         }
       } catch (e) { smoke.pageStateError = String(e).slice(0, 120); }
+      /* v0.3.0：联动启动观测留痕（trigger→watch→done / manual 降级形态） */
+      smoke.boot = bootOrch.summary();
       const ok = smoke.loaded && smoke.pageErrors.length === 0 && smoke.consoleErrors.length === 0;
       console.log("SMOKE_RESULT " + JSON.stringify(smoke, null, 2));
+      bootOrch.stop();
       await backend.shutdown();
       app.exit(ok ? 0 : 1);
-    }, 10000);
+    }, 12000);
   }
 });
 
@@ -515,6 +608,7 @@ app.on("before-quit", async e => {
 
 app.on("will-quit", async e => {
   /* 退出时按配置带走本壳拉起的后端进程（默认保持运行 §四.4） */
+  bootOrch.stop();                                   // v0.3.0：联动启动观测随退出收口
   if (backend.ownsProcess()) {
     e.preventDefault();
     await backend.shutdown();

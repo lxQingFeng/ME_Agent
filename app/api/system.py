@@ -1,11 +1,11 @@
-"""系统级路由:健康检查 / 全系统状态 / 引擎手动控制(冒烟与联调用)。"""
+"""系统级路由:健康检查 / 全系统状态 / 引擎手动控制 / 开机联动(冒烟与联调用)。"""
 from __future__ import annotations
 
 import time
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.api.schemas import EngineControlIn
+from app.api.schemas import BootIn, EngineControlIn
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
 
@@ -20,6 +20,31 @@ def status(request: Request):
     """全系统状态:引擎/网关/记忆/程序/插件/TTS 聚合(总览页数据源)。"""
     ctx = request.app.state.ctx
     return ctx.status()
+
+
+@router.post("/boot")
+async def system_boot(request: Request, body: BootIn | None = None, wait: bool = False):
+    """开机联动(第 13 轮定稿契约, 勿改名): 手动/壳触发整套自启动编排。
+
+    - 编排与启动自联动同源(config/programs.yaml autostart): 未安装自动安装 →
+      start → integrate; 已运行跳过; 整链幂等; 失败降级不阻塞;
+    - 缺省(空体)后台执行: 立即返回 {ok, queued, plan, started, skipped}; 进度与
+      状态复用既有通道 —— GET /api/v1/programs 轮询 + WS program.status /
+      program.progress / program.webui 推送; 完成报告 GET /api/v1/system/boot;
+    - {"wait": true} 请求体或 ?wait=true: 同步等整链完成, 直接返回完整报告
+      {ok, steps, started, skipped, degraded, failed}(测试/CLI 联调用)。
+    """
+    ctx = request.app.state.ctx
+    if (body and body.wait) or wait:
+        return await ctx.programs.boot(trigger="manual")
+    return await ctx.programs.boot_async(trigger="manual")
+
+
+@router.get("/boot")
+def system_boot_status(request: Request):
+    """联动状态: {status: idle|running|done, trigger, report}(壳/控制台轮询用)。"""
+    ctx = request.app.state.ctx
+    return ctx.programs.boot_status()
 
 
 @router.post("/engine")
